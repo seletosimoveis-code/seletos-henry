@@ -150,13 +150,20 @@ def get_entry_status(pipe_id: int | None) -> int | None:
 DORM_ENUM = {1: 1110914, 2: 1110916, 3: 1110918, 4: 1110920}
 
 BAIRROS = [
+    # Natal
     "Ponta Negra", "Capim Macio", "Lagoa Nova", "Petrópolis", "Tirol",
     "Alecrim", "Cidade Alta", "Ribeira", "Santos Reis", "Areia Preta",
-    "Candelária", "Pitimbu", "Nova Parnamirim", "Parnamirim", "Emaús",
-    "Neópolis", "Mãe Luíza", "Redinha", "Igapó", "Pajuçara",
-    "Felipe Camarão", "Nazaré", "Planalto", "Quintas", "Nordeste",
-    "Bom Pastor", "Cidade Nova", "Guarapes", "Potengi", "Lagoa Azul",
-    "Praia do Meio", "Via Costeira", "Areia Branca",
+    "Candelária", "Pitimbu", "Emaús", "Neópolis", "Mãe Luíza",
+    "Redinha", "Igapó", "Pajuçara", "Felipe Camarão", "Nazaré",
+    "Planalto", "Quintas", "Nordeste", "Bom Pastor", "Cidade Nova",
+    "Guarapes", "Potengi", "Lagoa Azul", "Praia do Meio", "Via Costeira",
+    # Parnamirim
+    "Nova Parnamirim", "Parnamirim", "Emaús", "Liberdade", "Parque das Nações",
+    # Mossoró
+    "Mossoró", "Centro de Mossoró", "Nova Betânia", "Bom Jardim",
+    "Alto de São Manoel", "Aeroporto", "Abolição",
+    # Assú
+    "Assú", "Açu", "Centro de Assú",
 ]
 
 
