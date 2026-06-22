@@ -2,23 +2,13 @@
 main.py
 =======
 Servidor FastAPI da Seletos Imoveis.
-
-Endpoints:
-  GET  /health                  - healthcheck
-  POST /webhook/zapi            - mensagens WhatsApp (Z-API)
-  POST /webhook/kommo           - eventos de pipeline (Kommo) -> ativa Gabriel proativamente
-  POST /admin/reset/{phone}     - reinicia conversa
-  GET  /admin/status/{phone}    - estado atual de um numero
-
-Fluxo WhatsApp:
-  Z-API -> /webhook/zapi -> Henry (triagem) OU Gabriel (qualificacao) -> resposta
-
-Fluxo proativo:
-  Kommo move lead para funil -> /webhook/kommo -> Gabriel envia 1a mensagem
 """
 
+import re
+import json as json_lib
 import logging
 import asyncio
+from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -99,7 +89,6 @@ async def webhook_zapi(request: Request):
 async def process_message(phone: str, text: str, name: str):
     logger.info(f"[{phone}] Mensagem: {text[:80]}")
     try:
-        # Modo humano final -> silencio
         if gabriel.is_human_mode(phone) or henry.is_human_mode(phone):
             logger.info(f"[{phone}] Modo humano ativo — ignorando")
             return
@@ -108,7 +97,6 @@ async def process_message(phone: str, text: str, name: str):
         await asyncio.to_thread(zapi.send_typing, phone, 1500)
         await asyncio.sleep(1.5)
 
-        # Gabriel ativo (qualificacao em andamento)
         if gabriel.is_active(phone):
             response, handoff = await asyncio.to_thread(
                 gabriel.chat, phone, text, name, lead_ctx
@@ -125,7 +113,6 @@ async def process_message(phone: str, text: str, name: str):
                 gabriel.set_human_mode(phone)
             return
 
-        # Henry (triagem inicial)
         response, handoff = await asyncio.to_thread(
             henry.chat, phone, text, name, lead_ctx
         )
@@ -138,7 +125,6 @@ async def process_message(phone: str, text: str, name: str):
                 kommo.update_lead_after_bot, phone, history, handoff
             )
             henry.set_human_mode(phone)
-            # Gabriel ativado proativamente via webhook Kommo
 
     except Exception as e:
         logger.error(f"[{phone}] Erro: {e}", exc_info=True)
@@ -154,39 +140,82 @@ async def process_message(phone: str, text: str, name: str):
 # =============================================================================
 # WEBHOOK KOMMO — ativa Gabriel proativamente
 # =============================================================================
+
+def _parse_kommo_form(raw: bytes) -> dict:
+    """
+    Kommo envia webhooks como application/x-www-form-urlencoded com
+    notacao PHP: leads[status][0][id]=123&leads[status][0][pipeline_id]=456
+    """
+    params = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
+    result: dict = {}
+    for key, vals in params.items():
+        value = vals[0] if vals else ""
+        parts = [key.split("[")[0]] + re.findall(r"\[([^\]]*)\]", key)
+        curr = result
+        for i, part in enumerate(parts[:-1]):
+            next_key = parts[i + 1]
+            if next_key.isdigit():
+                curr.setdefault(part, [])
+                idx = int(next_key)
+                while len(curr[part]) <= idx:
+                    curr[part].append({})
+                curr = curr[part][idx]
+            else:
+                if isinstance(curr, dict):
+                    curr.setdefault(part, {})
+                    curr = curr[part]
+        last = parts[-1]
+        if isinstance(curr, dict) and not last.isdigit():
+            curr[last] = value
+    return result
+
+
 @app.post("/webhook/kommo")
 async def webhook_kommo(request: Request):
     """
-    Recebe eventos de mudanca de status do Kommo.
-    Quando lead entra em funil Gabriel, ele manda a 1a mensagem.
+    Recebe eventos do Kommo.
+    Retorna 200 imediatamente para evitar retries; processa em background.
     """
-    try:
-        body = await request.json()
-    except Exception:
-        try:
-            form = await request.form()
-            body = dict(form)
-        except Exception:
-            return JSONResponse({"status": "error"}, status_code=400)
+    raw = await request.body()
+    ct  = request.headers.get("content-type", "")
+    logger.info(f"Kommo webhook CT={ct!r} raw={raw[:300]}")
+    asyncio.create_task(_process_kommo_event(raw, ct))
+    return JSONResponse({"status": "ok"})
 
-    logger.info(f"Kommo webhook: {str(body)[:200]}")
+
+async def _process_kommo_event(raw: bytes, content_type: str):
+    body: dict = {}
+    try:
+        body = json_lib.loads(raw)
+    except Exception:
+        pass
+    if not body:
+        try:
+            body = _parse_kommo_form(raw)
+        except Exception as e:
+            logger.error(f"Kommo parse error: {e} raw={raw[:200]}")
+            return
+
+    logger.info(f"Kommo parsed: {str(body)[:400]}")
 
     leads_events = (body.get("leads") or {}).get("status", [])
     if not leads_events:
-        return JSONResponse({"status": "ignored", "reason": "no lead status events"})
+        logger.info("Kommo: sem eventos de status")
+        return
 
     for event in leads_events:
-        lead_id     = event.get("id")
-        pipeline_id = event.get("pipeline_id")
+        try:
+            lead_id     = int(event.get("id", 0))
+            pipeline_id = int(event.get("pipeline_id", 0))
+        except (TypeError, ValueError):
+            continue
         if not lead_id or not pipeline_id:
             continue
         funil = PIPE_TO_FUNIL.get(pipeline_id)
         if not funil:
-            logger.info(f"Pipeline {pipeline_id} nao e funil Gabriel — ignorando")
+            logger.info(f"Pipeline {pipeline_id} nao e funil Gabriel")
             continue
         asyncio.create_task(activate_gabriel_for_lead(lead_id, pipeline_id, funil))
-
-    return JSONResponse({"status": "ok"})
 
 
 async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
@@ -199,7 +228,7 @@ async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
             logger.warning(f"Lead {lead_id} sem telefone — Gabriel nao ativado")
             return
         if gabriel.is_human_mode(phone) or gabriel.is_active(phone):
-            logger.info(f"[{phone}] Ja tem bot ativo — Gabriel nao reativado")
+            logger.info(f"[{phone}] Bot ja ativo — nao reativa Gabriel")
             return
 
         henry.set_human_mode(phone)
