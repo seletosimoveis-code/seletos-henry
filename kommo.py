@@ -113,28 +113,33 @@ def _find_pipe_by_name(substrings: list[str]) -> int | None:
     return None
 
 
+def _cache_pipe(key: str, substrings: list[str]) -> int | None:
+    """Busca pipeline por nome, cacheia somente se encontrou (nunca cacheia None)."""
+    if _pipe_id_cache.get(key):            # já temos um ID válido
+        return _pipe_id_cache[key]
+    result = _find_pipe_by_name(substrings)
+    if result:
+        _pipe_id_cache[key] = result
+        logger.info(f"Pipeline '{key}' descoberto: id={result}")
+    else:
+        logger.warning(f"Pipeline '{key}' nao encontrado. Substrings: {substrings}")
+    return result
+
+
 def get_pipe_captacao() -> int | None:
-    if "captacao" not in _pipe_id_cache:
-        _pipe_id_cache["captacao"] = _find_pipe_by_name(_PIPE_NOME_CAPTACAO)
-    return _pipe_id_cache["captacao"]
+    return _cache_pipe("captacao", _PIPE_NOME_CAPTACAO)
 
 
 def get_pipe_corretores() -> int | None:
-    if "corretores" not in _pipe_id_cache:
-        _pipe_id_cache["corretores"] = _find_pipe_by_name(_PIPE_NOME_CORRETORES)
-    return _pipe_id_cache["corretores"]
+    return _cache_pipe("corretores", _PIPE_NOME_CORRETORES)
 
 
 def get_pipe_lancamentos() -> int | None:
-    if "lancamentos" not in _pipe_id_cache:
-        _pipe_id_cache["lancamentos"] = _find_pipe_by_name(_PIPE_NOME_LANCAMENTOS)
-    return _pipe_id_cache["lancamentos"]
+    return _cache_pipe("lancamentos", _PIPE_NOME_LANCAMENTOS)
 
 
 def get_pipe_investidor() -> int | None:
-    if "investidor" not in _pipe_id_cache:
-        _pipe_id_cache["investidor"] = _find_pipe_by_name(_PIPE_NOME_INVESTIDOR)
-    return _pipe_id_cache["investidor"]
+    return _cache_pipe("investidor", _PIPE_NOME_INVESTIDOR)
 
 
 def get_entry_status(pipe_id: int | None) -> int | None:
@@ -309,7 +314,8 @@ class KommoClient:
             "GABRIEL_INVESTIDOR"  : get_pipe_investidor(),
             "CORRETOR"            : get_pipe_corretores(),
         }
-        pipe_destino = HANDOFF_PIPELINE.get(handoff_reason)
+        pipe_destino  = HANDOFF_PIPELINE.get(handoff_reason)
+        lead_movido   = False
         if pipe_destino:
             status_destino = get_entry_status(pipe_destino)
             if status_destino:
@@ -319,15 +325,21 @@ class KommoClient:
                         "pipeline_id": pipe_destino,
                         "status_id"  : status_destino,
                     }])
+                    lead_movido = True
                     logger.info(f"Lead {lead_id} movido para pipeline {pipe_destino}")
                     time.sleep(0.2)
                 except Exception as e:
                     logger.error(f"Erro ao mover lead {lead_id} para pipeline {pipe_destino}: {e}")
             else:
-                logger.warning(f"Sem status de entrada para pipeline {pipe_destino}")
+                logger.warning(f"Sem status de entrada para pipeline {pipe_destino} (status_destino=None)")
+        else:
+            logger.warning(
+                f"Pipeline destino nao encontrado para handoff '{handoff_reason}'. "
+                f"HANDOFF_PIPELINE={HANDOFF_PIPELINE}"
+            )
 
         # ── Nota com resumo da triagem ─────────────────────────────────────────
-        nota = self._build_note_triagem(history, handoff_reason, dados)
+        nota = self._build_note_triagem(history, handoff_reason, dados, lead_movido)
         try:
             self._post("leads/notes", [{
                 "entity_id"  : lead_id,
@@ -339,7 +351,7 @@ class KommoClient:
             logger.error(f"Erro ao adicionar nota: {e}")
 
         # ── Tarefa ────────────────────────────────────────────────────────────
-        texto_tarefa = self._texto_tarefa(handoff_reason)
+        texto_tarefa = self._texto_tarefa(handoff_reason, lead_movido)
         urgente = handoff_reason in ("URGENTE", "SOLICITADO")
         try:
             self._post("tasks", [{
@@ -407,24 +419,36 @@ class KommoClient:
 
         return dados
 
-    def _texto_tarefa(self, handoff_reason: str) -> str:
+    def _texto_tarefa(self, handoff_reason: str, lead_movido: bool = True) -> str:
+        sufixo_move = {
+            "GABRIEL_ALUGUEL"     : "movido para Aluguel",
+            "GABRIEL_AVULSO"      : "movido para Avulso",
+            "GABRIEL_CAPTACAO"    : "movido para Captação",
+            "GABRIEL_LANCAMENTOS" : "movido para Lançamentos",
+            "GABRIEL_INVESTIDOR"  : "movido para Investidor",
+            "CORRETOR"            : "movido para Corretores",
+        }
+        aviso_nao_movido = ""
+        if handoff_reason in sufixo_move and not lead_movido:
+            aviso_nao_movido = f" ⚠️ ATENÇÃO: pipeline NÃO foi movido automaticamente — mover manualmente para '{sufixo_move[handoff_reason].replace('movido para ', '')}' no Kommo."
+
         tarefas = {
-            "GABRIEL_ALUGUEL"  : "🤖 Henry: lead de LOCAÇÃO triado e movido para Aluguel. Gabriel assume a qualificação.",
-            "GABRIEL_AVULSO"   : "🤖 Henry: lead de COMPRA triado e movido para Avulso. Gabriel assume a qualificação.",
-            "GABRIEL_CAPTACAO"    : "🤖 Henry: PROPRIETÁRIO identificado e movido para Captação. Time de captação deve contatar.",
-            "GABRIEL_LANCAMENTOS" : "🤖 Henry: lead de LANÇAMENTO triado. Gabriel assume a qualificação.",
-            "GABRIEL_INVESTIDOR"  : "🤖 Henry: INVESTIDOR identificado. Gabriel assume a qualificação.",
+            "GABRIEL_ALUGUEL"     : f"🤖 Henry: lead de LOCAÇÃO triado e movido para Aluguel. Gabriel assume a qualificação.{aviso_nao_movido}",
+            "GABRIEL_AVULSO"      : f"🤖 Henry: lead de COMPRA triado e movido para Avulso. Gabriel assume a qualificação.{aviso_nao_movido}",
+            "GABRIEL_CAPTACAO"    : f"🤖 Henry: PROPRIETÁRIO identificado. Time de captação deve contatar.{aviso_nao_movido}",
+            "GABRIEL_LANCAMENTOS" : f"🤖 Henry: lead de LANÇAMENTO triado. Gabriel assume a qualificação.{aviso_nao_movido}",
+            "GABRIEL_INVESTIDOR"  : f"🤖 Henry: INVESTIDOR identificado. Gabriel assume a qualificação.{aviso_nao_movido}",
             "SUPORTE"             : "🏘️ Henry: CLIENTE ATIVO com demanda de suporte/manutenção. Atendimento ao cliente deve contatar.",
-            "CORRETOR"         : "🤖 Henry: CORRETOR PARCEIRO identificado. Time de parcerias deve contatar.",
-            "URGENTE"          : "⚡ Henry: URGENTE — lead precisa de atendimento imediato!",
-            "SOLICITADO"       : "🤖 Henry: cliente solicitou atendimento humano. Contatar agora.",
-            "JURIDICO"         : "🤖 Henry: dúvida jurídica identificada. Encaminhar para responsável.",
+            "CORRETOR"            : f"🤖 Henry: CORRETOR PARCEIRO identificado. Time de parcerias deve contatar.{aviso_nao_movido}",
+            "URGENTE"             : "⚡ Henry: URGENTE — lead precisa de atendimento imediato!",
+            "SOLICITADO"          : "🤖 Henry: cliente solicitou atendimento humano. Contatar agora.",
+            "JURIDICO"            : "🤖 Henry: dúvida jurídica identificada. Encaminhar para responsável.",
         }
         return tarefas.get(handoff_reason, f"🤖 Henry: handoff — {handoff_reason}. Verificar e dar continuidade.")
 
     # ─── Nota de triagem ──────────────────────────────────────────────────────
 
-    def _build_note_triagem(self, history, handoff_reason, dados) -> str:
+    def _build_note_triagem(self, history, handoff_reason, dados, lead_movido: bool = True) -> str:
         perfil_label = {
             "GABRIEL_ALUGUEL"  : "🏠 Locatário",
             "GABRIEL_AVULSO"   : "🏡 Comprador",
@@ -438,10 +462,12 @@ class KommoClient:
             "JURIDICO"         : "⚖️ Dúvida jurídica",
         }.get(handoff_reason, f"❓ {handoff_reason}")
 
+        aviso = "" if lead_movido else "\n⚠️ ATENÇÃO: lead NÃO foi movido automaticamente — mover pipeline manualmente.\n"
+
         linhas = [
             f"🤖 Henry (SDR) — Triagem concluída",
             f"Perfil identificado: {perfil_label}",
-            "",
+            aviso,
             "📋 DADOS COLETADOS NA TRIAGEM:",
             f"  Interesse    : {dados.get('motivo', '—')}",
             f"  Bairro       : {dados.get('bairro', '—')}",

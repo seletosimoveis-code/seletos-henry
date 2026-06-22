@@ -265,3 +265,28 @@ async def get_status(phone: str):
         "henry_history"  : len(henry.get_history(phone)),
         "gabriel_history": len(gabriel.get_history(phone)),
     }
+
+
+@app.get("/admin/pipelines")
+async def debug_pipelines():
+    """Debug: mostra os pipelines encontrados na conta Kommo."""
+    from kommo import (
+        _todos_os_pipelines, get_pipe_captacao, get_pipe_corretores,
+        get_pipe_lancamentos, get_pipe_investidor, PIPE_ALUGUEL, PIPE_AVULSO,
+        _pipe_id_cache,
+    )
+    # força re-busca limpando cache de lista (não o de IDs individuais)
+    _pipe_id_cache.pop("all", None)
+    todos = await asyncio.to_thread(_todos_os_pipelines)
+    return {
+        "todos_pipelines"     : [{"id": p["id"], "name": p.get("name")} for p in todos],
+        "pipe_to_funil"       : PIPE_TO_FUNIL,
+        "PIPE_ALUGUEL"        : PIPE_ALUGUEL,
+        "PIPE_AVULSO"         : PIPE_AVULSO,
+        "get_pipe_captacao"   : await asyncio.to_thread(get_pipe_captacao),
+        "get_pipe_lancamentos": await asyncio.to_thread(get_pipe_lancamentos),
+        "get_pipe_investidor" : await asyncio.to_thread(get_pipe_investidor),
+        "get_pipe_corretores" : await asyncio.to_thread(get_pipe_corretores),
+    }
+ "get_pipe_corretores" : await asyncio.to_thread(get_pipe_corretores),
+    }
