@@ -1,13 +1,20 @@
 """
 main.py
 =======
-Servidor FastAPI do bot da Seletos Imóveis.
-Recebe webhooks do Z-API, processa com Claude e responde via WhatsApp.
+Servidor FastAPI da Seletos Imoveis.
 
-Fluxo:
-  Z-API → POST /webhook/zapi → process_message() → Claude → Z-API (envia resposta)
-                                                          ↓
-                                                    Kommo (atualiza lead)
+Endpoints:
+  GET  /health                  - healthcheck
+  POST /webhook/zapi            - mensagens WhatsApp (Z-API)
+  POST /webhook/kommo           - eventos de pipeline (Kommo) -> ativa Gabriel proativamente
+  POST /admin/reset/{phone}     - reinicia conversa
+  GET  /admin/status/{phone}    - estado atual de um numero
+
+Fluxo WhatsApp:
+  Z-API -> /webhook/zapi -> Henry (triagem) OU Gabriel (qualificacao) -> resposta
+
+Fluxo proativo:
+  Kommo move lead para funil -> /webhook/kommo -> Gabriel envia 1a mensagem
 """
 
 import logging
@@ -15,44 +22,60 @@ import asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from config import ZAPI_INSTANCE_ID
 from agent import AgentManager
+from gabriel.agent import GabrielManager, PIPE_TO_FUNIL
 from zapi import ZAPIClient
-from kommo import KommoClient
+from kommo import (
+    KommoClient,
+    PIPE_ALUGUEL, PIPE_AVULSO,
+    get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
+)
 
-# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
-    level  = logging.INFO,
-    format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ─── App ──────────────────────────────────────────────────────────────────────
-app    = FastAPI(title="Seletos Bot", version="1.0.0")
-agent  = AgentManager()
-zapi   = ZAPIClient()
-kommo  = KommoClient()
+app     = FastAPI(title="Seletos Bot", version="2.0.0")
+henry   = AgentManager()
+gabriel = GabrielManager()
+zapi    = ZAPIClient()
+kommo   = KommoClient()
 
 
-# ─── Health check ─────────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup():
+    await asyncio.to_thread(_populate_pipe_map)
+
+
+def _populate_pipe_map():
+    PIPE_TO_FUNIL[PIPE_ALUGUEL] = "aluguel"
+    PIPE_TO_FUNIL[PIPE_AVULSO]  = "avulso"
+    captacao    = get_pipe_captacao()
+    lancamentos = get_pipe_lancamentos()
+    investidor  = get_pipe_investidor()
+    if captacao:    PIPE_TO_FUNIL[captacao]    = "captacao"
+    if lancamentos: PIPE_TO_FUNIL[lancamentos] = "lancamentos"
+    if investidor:  PIPE_TO_FUNIL[investidor]  = "investidor"
+    logger.info(f"Pipelines Gabriel mapeados: {PIPE_TO_FUNIL}")
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "bot": "Henry — Seletos Imóveis"}
+    return {"status": "ok", "bot": "Henry + Gabriel — Seletos Imoveis"}
 
 
-# ─── Webhook Z-API ────────────────────────────────────────────────────────────
+# =============================================================================
+# WEBHOOK Z-API
+# =============================================================================
 @app.post("/webhook/zapi")
 async def webhook_zapi(request: Request):
-    """
-    Endpoint que recebe todas as notificações do Z-API.
-    Responde imediatamente (200) e processa em background.
-    """
     try:
         body = await request.json()
     except Exception:
         return JSONResponse({"status": "error", "reason": "invalid json"}, status_code=400)
 
-    # ── Filtros de mensagens ignoradas ────────────────────────────────────────
     if body.get("fromMe"):
         return JSONResponse({"status": "ignored", "reason": "fromMe"})
     if body.get("isGroup"):
@@ -62,7 +85,6 @@ async def webhook_zapi(request: Request):
     if body.get("type") != "ReceivedCallback":
         return JSONResponse({"status": "ignored", "reason": "not a message"})
 
-    # ── Extrai dados ──────────────────────────────────────────────────────────
     phone = body.get("phone", "").strip()
     text  = (body.get("text") or {}).get("message", "").strip()
     name  = body.get("senderName", "").strip()
@@ -70,50 +92,56 @@ async def webhook_zapi(request: Request):
     if not phone or not text:
         return JSONResponse({"status": "ignored", "reason": "empty phone or text"})
 
-    # ── Processa em background ────────────────────────────────────────────────
     asyncio.create_task(process_message(phone, text, name))
     return JSONResponse({"status": "queued"})
 
 
-# ─── Processamento da mensagem ────────────────────────────────────────────────
 async def process_message(phone: str, text: str, name: str):
-    """Orquestra: contexto → Claude → resposta → handoff se necessário."""
-    logger.info(f"[{phone}] Mensagem recebida: {text[:80]}")
-
+    logger.info(f"[{phone}] Mensagem: {text[:80]}")
     try:
-        # Verifica se está em modo humano (bot silencioso)
-        if agent.is_human_mode(phone):
+        # Modo humano final -> silencio
+        if gabriel.is_human_mode(phone) or henry.is_human_mode(phone):
             logger.info(f"[{phone}] Modo humano ativo — ignorando")
             return
 
-        # Busca contexto do lead no Kommo (assíncrono em thread)
         lead_ctx = await asyncio.to_thread(kommo.get_lead_context, phone)
-
-        # Simula "digitando..." por 1.5s
         await asyncio.to_thread(zapi.send_typing, phone, 1500)
         await asyncio.sleep(1.5)
 
-        # Gera resposta com Claude
-        response, handoff_reason = await asyncio.to_thread(
-            agent.chat, phone, text, name, lead_ctx
-        )
-
-        # Envia resposta ao cliente
-        await asyncio.to_thread(zapi.send_text, phone, response)
-        logger.info(f"[{phone}] Resposta enviada ({len(response)} chars)")
-
-        # Handoff se necessário
-        if handoff_reason:
-            logger.info(f"[{phone}] Handoff detectado: {handoff_reason}")
-            history = agent.get_history(phone)
-            await asyncio.to_thread(
-                kommo.update_lead_after_bot, phone, history, handoff_reason
+        # Gabriel ativo (qualificacao em andamento)
+        if gabriel.is_active(phone):
+            response, handoff = await asyncio.to_thread(
+                gabriel.chat, phone, text, name, lead_ctx
             )
-            agent.set_human_mode(phone)
+            await asyncio.to_thread(zapi.send_text, phone, response)
+            logger.info(f"[{phone}] Gabriel respondeu ({len(response)} chars)")
+            if handoff:
+                logger.info(f"[{phone}] Gabriel handoff: {handoff}")
+                history = gabriel.get_history(phone)
+                funil   = gabriel.get_funil(phone)
+                await asyncio.to_thread(
+                    kommo.update_lead_after_gabriel, phone, history, handoff, funil
+                )
+                gabriel.set_human_mode(phone)
+            return
+
+        # Henry (triagem inicial)
+        response, handoff = await asyncio.to_thread(
+            henry.chat, phone, text, name, lead_ctx
+        )
+        await asyncio.to_thread(zapi.send_text, phone, response)
+        logger.info(f"[{phone}] Henry respondeu ({len(response)} chars)")
+        if handoff:
+            logger.info(f"[{phone}] Henry handoff: {handoff}")
+            history = henry.get_history(phone)
+            await asyncio.to_thread(
+                kommo.update_lead_after_bot, phone, history, handoff
+            )
+            henry.set_human_mode(phone)
+            # Gabriel ativado proativamente via webhook Kommo
 
     except Exception as e:
-        logger.error(f"[{phone}] Erro no processamento: {e}", exc_info=True)
-        # Mensagem de fallback para o cliente
+        logger.error(f"[{phone}] Erro: {e}", exc_info=True)
         try:
             await asyncio.to_thread(
                 zapi.send_text, phone,
@@ -123,22 +151,88 @@ async def process_message(phone: str, text: str, name: str):
             pass
 
 
-# ─── Endpoint de controle (uso interno) ───────────────────────────────────────
+# =============================================================================
+# WEBHOOK KOMMO — ativa Gabriel proativamente
+# =============================================================================
+@app.post("/webhook/kommo")
+async def webhook_kommo(request: Request):
+    """
+    Recebe eventos de mudanca de status do Kommo.
+    Quando lead entra em funil Gabriel, ele manda a 1a mensagem.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        try:
+            form = await request.form()
+            body = dict(form)
+        except Exception:
+            return JSONResponse({"status": "error"}, status_code=400)
+
+    logger.info(f"Kommo webhook: {str(body)[:200]}")
+
+    leads_events = (body.get("leads") or {}).get("status", [])
+    if not leads_events:
+        return JSONResponse({"status": "ignored", "reason": "no lead status events"})
+
+    for event in leads_events:
+        lead_id     = event.get("id")
+        pipeline_id = event.get("pipeline_id")
+        if not lead_id or not pipeline_id:
+            continue
+        funil = PIPE_TO_FUNIL.get(pipeline_id)
+        if not funil:
+            logger.info(f"Pipeline {pipeline_id} nao e funil Gabriel — ignorando")
+            continue
+        asyncio.create_task(activate_gabriel_for_lead(lead_id, pipeline_id, funil))
+
+    return JSONResponse({"status": "ok"})
+
+
+async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
+    try:
+        await asyncio.sleep(2)
+        phone, name, lead_ctx = await asyncio.to_thread(
+            kommo.get_lead_phone_and_context, lead_id
+        )
+        if not phone:
+            logger.warning(f"Lead {lead_id} sem telefone — Gabriel nao ativado")
+            return
+        if gabriel.is_human_mode(phone) or gabriel.is_active(phone):
+            logger.info(f"[{phone}] Ja tem bot ativo — Gabriel nao reativado")
+            return
+
+        henry.set_human_mode(phone)
+        first_msg = await asyncio.to_thread(
+            gabriel.activate, phone, funil, name, lead_ctx
+        )
+        await asyncio.to_thread(zapi.send_typing, phone, 2000)
+        await asyncio.sleep(2)
+        await asyncio.to_thread(zapi.send_text, phone, first_msg)
+        logger.info(f"[{phone}] Gabriel ativado proativamente — funil: {funil}")
+
+    except Exception as e:
+        logger.error(f"Erro ao ativar Gabriel para lead {lead_id}: {e}", exc_info=True)
+
+
+# =============================================================================
+# ADMIN
+# =============================================================================
 @app.post("/admin/reset/{phone}")
 async def reset_conversation(phone: str):
-    """
-    Reinicia a conversa de um número (remove modo humano e limpa histórico).
-    Útil quando o corretor quer devolver o lead para o bot.
-    """
-    agent.reset_conversation(phone)
+    henry.reset_conversation(phone)
+    gabriel.reset(phone)
     return {"status": "ok", "message": f"Conversa de {phone} reiniciada"}
 
 
 @app.get("/admin/status/{phone}")
 async def get_status(phone: str):
-    """Retorna estado atual de um número."""
     return {
-        "phone"      : phone,
-        "human_mode" : agent.is_human_mode(phone),
-        "history_len": len(agent.get_history(phone)),
+        "phone"          : phone,
+        "henry_mode"     : henry.is_human_mode(phone),
+        "gabriel_active" : gabriel.is_active(phone),
+        "gabriel_funil"  : gabriel.get_funil(phone),
+        "gabriel_human"  : gabriel.is_human_mode(phone),
+        "henry_history"  : len(henry.get_history(phone)),
+        "gabriel_history": len(gabriel.get_history(phone)),
     }

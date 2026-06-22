@@ -82,6 +82,8 @@ STATUS_PERDIDO  = 143
 # Substrings para localizar pipelines dinamicamente pelo nome
 _PIPE_NOME_CAPTACAO   = ["captação", "captacao", "proprietário", "proprietario"]
 _PIPE_NOME_CORRETORES = ["corretor", "equipe"]
+_PIPE_NOME_LANCAMENTOS = ["lançamento", "lancamento", "lançamentos", "lancamentos"]
+_PIPE_NOME_INVESTIDOR  = ["investidor", "adjudicado"]
 
 _pipe_entry_cache: dict  = {}
 _pipe_id_cache: dict     = {}   # cache de busca por nome
@@ -123,6 +125,18 @@ def get_pipe_corretores() -> int | None:
     return _pipe_id_cache["corretores"]
 
 
+def get_pipe_lancamentos() -> int | None:
+    if "lancamentos" not in _pipe_id_cache:
+        _pipe_id_cache["lancamentos"] = _find_pipe_by_name(_PIPE_NOME_LANCAMENTOS)
+    return _pipe_id_cache["lancamentos"]
+
+
+def get_pipe_investidor() -> int | None:
+    if "investidor" not in _pipe_id_cache:
+        _pipe_id_cache["investidor"] = _find_pipe_by_name(_PIPE_NOME_INVESTIDOR)
+    return _pipe_id_cache["investidor"]
+
+
 def get_entry_status(pipe_id: int | None) -> int | None:
     """Retorna o primeiro status ativo (não 'Incoming leads') de um pipeline."""
     if not pipe_id:
@@ -150,20 +164,13 @@ def get_entry_status(pipe_id: int | None) -> int | None:
 DORM_ENUM = {1: 1110914, 2: 1110916, 3: 1110918, 4: 1110920}
 
 BAIRROS = [
-    # Natal
     "Ponta Negra", "Capim Macio", "Lagoa Nova", "Petrópolis", "Tirol",
     "Alecrim", "Cidade Alta", "Ribeira", "Santos Reis", "Areia Preta",
-    "Candelária", "Pitimbu", "Emaús", "Neópolis", "Mãe Luíza",
-    "Redinha", "Igapó", "Pajuçara", "Felipe Camarão", "Nazaré",
-    "Planalto", "Quintas", "Nordeste", "Bom Pastor", "Cidade Nova",
-    "Guarapes", "Potengi", "Lagoa Azul", "Praia do Meio", "Via Costeira",
-    # Parnamirim
-    "Nova Parnamirim", "Parnamirim", "Emaús", "Liberdade", "Parque das Nações",
-    # Mossoró
-    "Mossoró", "Centro de Mossoró", "Nova Betânia", "Bom Jardim",
-    "Alto de São Manoel", "Aeroporto", "Abolição",
-    # Assú
-    "Assú", "Açu", "Centro de Assú",
+    "Candelária", "Pitimbu", "Nova Parnamirim", "Parnamirim", "Emaús",
+    "Neópolis", "Mãe Luíza", "Redinha", "Igapó", "Pajuçara",
+    "Felipe Camarão", "Nazaré", "Planalto", "Quintas", "Nordeste",
+    "Bom Pastor", "Cidade Nova", "Guarapes", "Potengi", "Lagoa Azul",
+    "Praia do Meio", "Via Costeira", "Areia Branca",
 ]
 
 
@@ -295,10 +302,12 @@ class KommoClient:
 
         # ── Move para o funil correto ──────────────────────────────────────────
         HANDOFF_PIPELINE = {
-            "GABRIEL_ALUGUEL"  : PIPE_ALUGUEL,
-            "GABRIEL_AVULSO"   : PIPE_AVULSO,
-            "GABRIEL_CAPTACAO" : get_pipe_captacao(),
-            "CORRETOR"         : get_pipe_corretores(),
+            "GABRIEL_ALUGUEL"     : PIPE_ALUGUEL,
+            "GABRIEL_AVULSO"      : PIPE_AVULSO,
+            "GABRIEL_CAPTACAO"    : get_pipe_captacao(),
+            "GABRIEL_LANCAMENTOS" : get_pipe_lancamentos(),
+            "GABRIEL_INVESTIDOR"  : get_pipe_investidor(),
+            "CORRETOR"            : get_pipe_corretores(),
         }
         pipe_destino = HANDOFF_PIPELINE.get(handoff_reason)
         if pipe_destino:
@@ -364,6 +373,10 @@ class KommoClient:
             dados["motivo"] = "Compra"
         elif handoff_reason in ("GABRIEL_CAPTACAO",):
             dados["motivo"] = "Proprietário"
+        elif handoff_reason in ("GABRIEL_LANCAMENTOS",):
+            dados["motivo"] = "Lançamento"
+        elif handoff_reason in ("GABRIEL_INVESTIDOR",):
+            dados["motivo"] = "Investidor"
         elif handoff_reason in ("CORRETOR",):
             dados["motivo"] = "Corretor parceiro"
         else:
@@ -398,7 +411,10 @@ class KommoClient:
         tarefas = {
             "GABRIEL_ALUGUEL"  : "🤖 Henry: lead de LOCAÇÃO triado e movido para Aluguel. Gabriel assume a qualificação.",
             "GABRIEL_AVULSO"   : "🤖 Henry: lead de COMPRA triado e movido para Avulso. Gabriel assume a qualificação.",
-            "GABRIEL_CAPTACAO" : "🤖 Henry: PROPRIETÁRIO identificado e movido para Captação. Time de captação deve contatar.",
+            "GABRIEL_CAPTACAO"    : "🤖 Henry: PROPRIETÁRIO identificado e movido para Captação. Time de captação deve contatar.",
+            "GABRIEL_LANCAMENTOS" : "🤖 Henry: lead de LANÇAMENTO triado. Gabriel assume a qualificação.",
+            "GABRIEL_INVESTIDOR"  : "🤖 Henry: INVESTIDOR identificado. Gabriel assume a qualificação.",
+            "SUPORTE"             : "🏘️ Henry: CLIENTE ATIVO com demanda de suporte/manutenção. Atendimento ao cliente deve contatar.",
             "CORRETOR"         : "🤖 Henry: CORRETOR PARCEIRO identificado. Time de parcerias deve contatar.",
             "URGENTE"          : "⚡ Henry: URGENTE — lead precisa de atendimento imediato!",
             "SOLICITADO"       : "🤖 Henry: cliente solicitou atendimento humano. Contatar agora.",
@@ -412,7 +428,10 @@ class KommoClient:
         perfil_label = {
             "GABRIEL_ALUGUEL"  : "🏠 Locatário",
             "GABRIEL_AVULSO"   : "🏡 Comprador",
-            "GABRIEL_CAPTACAO" : "🔑 Proprietário",
+            "GABRIEL_CAPTACAO"    : "🔑 Proprietário",
+            "GABRIEL_LANCAMENTOS" : "🏗️ Comprador (Lançamento)",
+            "GABRIEL_INVESTIDOR"  : "📈 Investidor",
+            "SUPORTE"             : "🏘️ Cliente ativo (suporte)",
             "CORRETOR"         : "🤝 Corretor parceiro",
             "URGENTE"          : "⚡ Urgente",
             "SOLICITADO"       : "🙋 Solicitou humano",
@@ -437,3 +456,127 @@ class KommoClient:
             role = "👤 Cliente" if msg["role"] == "user" else "🤖 Henry"
             linhas.append(f"{role}: {msg['content']}")
         return "\n".join(linhas)[:3500]
+
+    # ─── Para webhook Kommo (ativação proativa do Gabriel) ────────────────────
+
+    def get_lead_phone_and_context(self, lead_id: int) -> tuple[str | None, str, dict]:
+        """
+        Dado um lead_id, retorna (phone, name, lead_context).
+        Usado pelo webhook do Kommo para ativar o Gabriel proativamente.
+        """
+        try:
+            lead = self._get(f"leads/{lead_id}", {"with": "contacts,pipeline,status,custom_fields"})
+        except Exception as e:
+            logger.error(f"Erro ao buscar lead {lead_id}: {e}")
+            return None, "", {}
+
+        name = lead.get("name", "")
+
+        # Busca telefone nos contatos do lead
+        phone = None
+        contacts = (lead.get("_embedded") or {}).get("contacts", [])
+        for contact_stub in contacts:
+            try:
+                contact = self._get(f"contacts/{contact_stub['id']}")
+                for cf in (contact.get("custom_fields_values") or []):
+                    if cf.get("field_code") in ("PHONE", "TEL"):
+                        vals = cf.get("values", [])
+                        if vals:
+                            phone = _norm_phone(str(vals[0].get("value", "")))
+                            break
+                if phone:
+                    break
+            except Exception:
+                continue
+
+        if not phone:
+            logger.warning(f"Lead {lead_id} sem telefone nos contatos")
+            return None, name, {}
+
+        ctx = self.get_lead_context(phone)
+        return phone, name, ctx
+
+    # ─── Pós-handoff Gabriel (qualificação concluída) ─────────────────────────
+
+    def update_lead_after_gabriel(
+        self,
+        phone: str,
+        history: list[dict],
+        handoff_reason: str,
+        funil: str | None,
+    ):
+        """
+        Executado após Gabriel concluir a qualificação:
+        1. Adiciona nota com resumo da qualificação + conversa
+        2. Cria tarefa para o corretor
+        3. (Não move pipeline — Gabriel já está no funil correto)
+        """
+        lead = self.find_lead_by_phone(phone)
+        if not lead:
+            logger.warning(f"Gabriel handoff: lead não encontrado para {phone}")
+            return
+
+        lead_id = lead["id"]
+
+        # Nota de qualificação
+        nota = self._build_note_gabriel(history, handoff_reason, funil)
+        try:
+            self._post("leads/notes", [{
+                "entity_id"  : lead_id,
+                "entity_type": "leads",
+                "note_type"  : "common",
+                "params"     : {"text": nota},
+            }])
+        except Exception as e:
+            logger.error(f"Erro ao adicionar nota Gabriel: {e}")
+
+        # Tarefa para corretor
+        urgente = handoff_reason in ("URGENTE", "SOLICITADO")
+        funil_label = {
+            "aluguel"    : "LOCAÇÃO",
+            "avulso"     : "COMPRA",
+            "captacao"   : "CAPTAÇÃO",
+            "lancamentos": "LANÇAMENTO",
+            "investidor" : "INVESTIMENTO",
+        }.get(funil or "", funil or "?")
+
+        texto_tarefa = f"🤖 Gabriel: qualificação de {funil_label} concluída. Lead pronto para o corretor fechar! ✅"
+        if handoff_reason == "URGENTE":
+            texto_tarefa = f"⚡ Gabriel: URGENTE — lead de {funil_label} precisa de atendimento imediato!"
+        elif handoff_reason == "SOLICITADO":
+            texto_tarefa = f"🙋 Gabriel: cliente de {funil_label} solicitou atendimento humano."
+
+        try:
+            self._post("tasks", [{
+                "entity_id"    : lead_id,
+                "entity_type"  : "leads",
+                "task_type_id" : 1,
+                "text"         : texto_tarefa,
+                "complete_till": int(time.time()) + (1800 if urgente else 86400),
+            }])
+        except Exception as e:
+            logger.error(f"Erro ao criar tarefa Gabriel: {e}")
+
+        logger.info(f"Gabriel handoff concluído — lead {lead_id} | funil: {funil} | motivo: {handoff_reason}")
+
+    def _build_note_gabriel(self, history: list[dict], handoff_reason: str, funil: str | None) -> str:
+        funil_label = {
+            "aluguel"    : "🏠 Locação",
+            "avulso"     : "🏡 Compra",
+            "captacao"   : "🔑 Captação",
+            "lancamentos": "🏗️ Lançamento",
+            "investidor" : "📈 Investimento",
+        }.get(funil or "", funil or "?")
+
+        linhas = [
+            f"🤖 Gabriel (Qualificador) — Qualificação concluída",
+            f"Funil: {funil_label}",
+            f"Handoff: {handoff_reason}",
+            "",
+            "─── Conversa Gabriel × Cliente ───",
+        ]
+        for msg in history[-40:]:
+            role = "👤 Cliente" if msg["role"] == "user" else "🤖 Gabriel"
+            linhas.append(f"{role}: {msg['content']}")
+        return "\n".join(linhas)[:3500]
+
