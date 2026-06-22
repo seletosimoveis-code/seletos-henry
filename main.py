@@ -308,5 +308,3 @@ async def debug_pipelines():
         "get_pipe_investidor" : await asyncio.to_thread(get_pipe_investidor),
         "get_pipe_corretores" : await asyncio.to_thread(get_pipe_corretores),
     }
- "get_pipe_corretores" : await asyncio.to_thread(get_pipe_corretores),
-    }
