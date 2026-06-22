@@ -83,6 +83,17 @@ class AgentManager:
         _human_mode.add(phone)
         logger.info(f"[{phone}] Modo humano ativado")
 
+    def record_outgoing(self, phone: str, text: str):
+        """
+        Registra mensagem enviada por humano (atendente) como turno do assistente.
+        Henry aprende o que foi dito sem gerar nova resposta.
+        """
+        history = _conversations.setdefault(phone, [])
+        history.append({"role": "assistant", "content": text})
+        if len(history) > MAX_HISTORY:
+            _conversations[phone] = history[-MAX_HISTORY:]
+        logger.info(f"[{phone}] Mensagem humana registrada no histórico Henry ({len(text)} chars)")
+
     def reset_conversation(self, phone: str):
         """Reinicia a conversa de um número (ex: novo atendimento)."""
         _conversations.pop(phone, None)

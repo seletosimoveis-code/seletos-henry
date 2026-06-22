@@ -66,8 +66,6 @@ async def webhook_zapi(request: Request):
     except Exception:
         return JSONResponse({"status": "error", "reason": "invalid json"}, status_code=400)
 
-    if body.get("fromMe"):
-        return JSONResponse({"status": "ignored", "reason": "fromMe"})
     if body.get("isGroup"):
         return JSONResponse({"status": "ignored", "reason": "group"})
     if body.get("isNewsletter"):
@@ -81,6 +79,12 @@ async def webhook_zapi(request: Request):
 
     if not phone or not text:
         return JSONResponse({"status": "ignored", "reason": "empty phone or text"})
+
+    if body.get("fromMe"):
+        # Mensagem enviada pelo atendente humano — registra no histórico sem responder.
+        # Henry/Gabriel aprendem o que foi dito para manter contexto da conversa.
+        asyncio.create_task(record_outgoing_message(phone, text))
+        return JSONResponse({"status": "recorded", "reason": "fromMe — adicionado ao histórico"})
 
     asyncio.create_task(process_message(phone, text, name))
     return JSONResponse({"status": "queued"})
@@ -135,6 +139,22 @@ async def process_message(phone: str, text: str, name: str):
             )
         except Exception:
             pass
+
+
+async def record_outgoing_message(phone: str, text: str):
+    """
+    Registra mensagem enviada pelo atendente humano no histórico do bot ativo.
+    Não gera resposta — apenas mantém o contexto para o próximo turno do cliente.
+    """
+    try:
+        if gabriel.is_active(phone) and not gabriel.is_human_mode(phone):
+            gabriel.record_outgoing(phone, text)
+        elif not henry.is_human_mode(phone):
+            henry.record_outgoing(phone, text)
+        else:
+            logger.info(f"[{phone}] fromMe em modo humano total — ignorado")
+    except Exception as e:
+        logger.error(f"[{phone}] Erro ao registrar fromMe: {e}")
 
 
 # =============================================================================

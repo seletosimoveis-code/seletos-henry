@@ -139,6 +139,16 @@ class GabrielManager:
     def get_history(self, phone: str) -> list[dict]:
         return _gabriel_conversations.get(phone, [])
 
+    def record_outgoing(self, phone: str, text: str):
+        """
+        Registra mensagem enviada por humano como turno do assistente no contexto Gabriel.
+        """
+        history = _gabriel_conversations.setdefault(phone, [])
+        history.append({"role": "assistant", "content": text})
+        if len(history) > MAX_HISTORY:
+            _gabriel_conversations[phone] = history[-MAX_HISTORY:]
+        logger.info(f"[{phone}] Mensagem humana registrada no histórico Gabriel ({len(text)} chars)")
+
     def reset(self, phone: str):
         _gabriel_mode.discard(phone)
         _human_mode.discard(phone)
