@@ -267,7 +267,7 @@ async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
 # =============================================================================
 # ADMIN
 # =============================================================================
-@app.post("/admin/reset/{phone}")
+@app.api_route("/admin/reset/{phone}", methods=["GET", "POST"])
 async def reset_conversation(phone: str):
     henry.reset_conversation(phone)
     gabriel.reset(phone)
