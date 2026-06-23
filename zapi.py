@@ -44,4 +44,8 @@ class ZAPIClient:
             requests.post(
                 f"{_BASE}/send-message-status",
                 json={"phone": phone, "status": "COMPOSING", "duration": duration_ms},
-                headers=self._headers()
+                headers=self._headers(),
+                timeout=5,
+            )
+        except Exception:
+            pass  # não é crítico

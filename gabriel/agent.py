@@ -182,4 +182,17 @@ class GabrielManager:
             "dormitorios"  : "Quartos",
             "motivacao"    : "Motivação",
             "situacao_atual": "Situação atual",
-            "finalidade"   : "Final
+            "finalidade"   : "Finalidade",
+            "num_pessoas"  : "Nº de pessoas",
+        }
+        for key, label in mapping.items():
+            val = ctx.get(key)
+            if val:
+                lines.append(f"{label}: {val}")
+                coletados.append(label.lower())
+
+        if coletados:
+            lines.append(f"\n⚠️ Dados já coletados pelo Henry: {', '.join(coletados)}.")
+            lines.append("Não repita essas perguntas — use-os para personalizar o atendimento.")
+
+        return "\n".join(lines)
