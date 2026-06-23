@@ -167,8 +167,4 @@ REGRAS DE COMUNICAÇÃO
   ou que outra região é secundária. Se o cliente mencionar qualquer
   dessas cidades, confirme que temos imóveis lá e siga a qualificação.
 
-══════════════════════════════════════════════════════════════
-CONTEXTO DO LEAD (dados do CRM)
-══════════════════════════════════════════════════════════════
-{lead_context}
-"""
+══════════════

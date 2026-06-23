@@ -27,6 +27,8 @@ class ZAPIClient:
         payload = {"phone": phone, "message": message}
         try:
             r = requests.post(url, json=payload, headers=self._headers(), timeout=15)
+            if not r.ok:
+                logger.error(f"[{phone}] Z-API {r.status_code}: {r.text[:300]}")
             r.raise_for_status()
             logger.info(f"[{phone}] Mensagem enviada ({len(message)} chars)")
             return True
@@ -42,8 +44,4 @@ class ZAPIClient:
             requests.post(
                 f"{_BASE}/send-message-status",
                 json={"phone": phone, "status": "COMPOSING", "duration": duration_ms},
-                headers=self._headers(),
-                timeout=5,
-            )
-        except Exception:
-            pass  # não é crítico
+                headers=self._headers()
