@@ -26,6 +26,9 @@ ZAPI_INSTANCE_ID  = os.environ.get("ZAPI_INSTANCE_ID", "")
 ZAPI_TOKEN        = os.environ.get("ZAPI_TOKEN", "")
 ZAPI_CLIENT_TOKEN = os.environ.get("ZAPI_CLIENT_TOKEN", "")
 
+# ─── OpenAI (Whisper — transcrição de áudios WhatsApp) ───────────────────────
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+
 # ─── Bot ──────────────────────────────────────────────────────────────────────
 # Máximo de mensagens no histórico por conversa
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", "40"))

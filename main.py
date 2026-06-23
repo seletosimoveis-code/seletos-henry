@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from agent import AgentManager
+from audio import transcribe_audio_url
 from gabriel.agent import GabrielManager, PIPE_TO_FUNIL
 from zapi import ZAPIClient
 from kommo import (
@@ -77,20 +78,41 @@ async def webhook_zapi(request: Request):
     text  = (body.get("text") or {}).get("message", "").strip()
     name  = body.get("senderName", "").strip()
 
-    if not phone or not text:
-        return JSONResponse({"status": "ignored", "reason": "empty phone or text"})
+    # Detecta áudio (ptt = Push To Talk = gravação de voz; audio = arquivo de áudio)
+    audio_data  = body.get("audio") or {}
+    audio_url   = audio_data.get("audioUrl", "")
+    audio_mime  = audio_data.get("mimeType", "audio/ogg")
+    is_audio    = bool(audio_url) and not text
+
+    if not phone or (not text and not is_audio):
+        return JSONResponse({"status": "ignored", "reason": "empty phone or text/audio"})
 
     if body.get("fromMe"):
         # Mensagem enviada pelo atendente humano — registra no histórico sem responder.
-        # Henry/Gabriel aprendem o que foi dito para manter contexto da conversa.
-        asyncio.create_task(record_outgoing_message(phone, text))
+        asyncio.create_task(record_outgoing_message(phone, text or "[áudio]"))
         return JSONResponse({"status": "recorded", "reason": "fromMe — adicionado ao histórico"})
 
-    asyncio.create_task(process_message(phone, text, name))
+    asyncio.create_task(process_message(phone, text, name, audio_url=audio_url, audio_mime=audio_mime))
     return JSONResponse({"status": "queued"})
 
 
-async def process_message(phone: str, text: str, name: str):
+async def process_message(
+    phone: str,
+    text: str,
+    name: str,
+    audio_url: str = "",
+    audio_mime: str = "audio/ogg",
+):
+    # ── Transcrição de áudio (Whisper) ──────────────────────────────────────────
+    if audio_url and not text:
+        logger.info(f"[{phone}] Áudio recebido — transcrevendo com Whisper...")
+        transcript = await asyncio.to_thread(transcribe_audio_url, audio_url, audio_mime)
+        if not transcript:
+            logger.warning(f"[{phone}] Transcrição falhou — ignorando mensagem de áudio")
+            return
+        text = transcript
+        logger.info(f"[{phone}] Áudio → texto: '{text[:80]}'")
+
     logger.info(f"[{phone}] Mensagem: {text[:80]}")
     try:
         if gabriel.is_human_mode(phone) or henry.is_human_mode(phone):
