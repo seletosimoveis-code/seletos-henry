@@ -191,6 +191,8 @@ class KommoClient:
 
     def _patch(self, path, payload):
         r = requests.patch(f"{BASE}/{path}", headers=_hdr(), json=payload)
+        if not r.ok:
+            logger.error(f"PATCH /{path} falhou: {r.status_code} {r.text[:300]}")
         r.raise_for_status()
         return r.json()
 
@@ -290,6 +292,48 @@ class KommoClient:
                 ctx[field_map[fid]] = val
 
         return ctx
+
+    # ─── Move lead por motivação conhecida (Canal Pro tags) ──────────────────
+
+    def move_lead_by_motivo(self, lead_id: int, motivo_busca: str) -> bool:
+        """
+        Move lead para o funil correto quando a motivação já é conhecida
+        (ex: Canal Pro SELL/RENT) sem esperar a triagem completa do Henry.
+        Retorna True se moveu, False caso contrário.
+        """
+        motivo = (motivo_busca or "").lower()
+        if "locaç" in motivo or "aluguel" in motivo or "locar" in motivo:
+            pipe_destino = PIPE_ALUGUEL
+        elif "compra" in motivo or "comprar" in motivo:
+            pipe_destino = PIPE_AVULSO
+        else:
+            return False  # motivação desconhecida — deixa Henry triar
+
+        # Verifica se o lead está na Recepção antes de mover
+        try:
+            lead = self._get(f"leads/{lead_id}", {"with": "pipeline"})
+            if lead.get("pipeline_id") != PIPE_RECEPCAO:
+                logger.info(f"Lead {lead_id} já está fora da Recepção — não move")
+                return False
+        except Exception as e:
+            logger.warning(f"Não foi possível verificar pipeline do lead {lead_id}: {e}")
+            return False
+
+        status_destino = get_entry_status(pipe_destino)
+        if not status_destino:
+            logger.warning(f"Sem status de entrada para pipeline {pipe_destino}")
+            return False
+        try:
+            self._patch("leads", [{
+                "id"         : lead_id,
+                "pipeline_id": pipe_destino,
+                "status_id"  : status_destino,
+            }])
+            logger.info(f"Lead {lead_id} auto-movido para pipeline {pipe_destino} (motivo: {motivo_busca})")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao auto-mover lead {lead_id}: {e}")
+            return False
 
     # ─── Pós-handoff ──────────────────────────────────────────────────────────
 

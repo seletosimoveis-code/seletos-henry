@@ -273,6 +273,11 @@ async def activate_henry_for_lead(lead_id: int):
             logger.info(f"[{phone}] Henry ja tem historico para {phone} — nao reativa proativamente")
             return
 
+        # Se motivação já é conhecida (Canal Pro SELL/RENT), move o lead para o funil correto
+        motivo = lead_ctx.get("motivo_busca", "")
+        if motivo:
+            await asyncio.to_thread(kommo.move_lead_by_motivo, lead_id, motivo)
+
         first_msg = await asyncio.to_thread(
             henry.activate, phone, name, lead_ctx
         )

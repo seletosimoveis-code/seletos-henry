@@ -98,18 +98,20 @@ class AgentManager:
             self._format_context(sender_name, lead_context),
         )
 
-        seed = [{"role": "user", "content": "__INICIO_PROATIVO__"}]
+        seed = [{"role": "user", "content": "[NOVO_LEAD]"}]
 
         try:
             response = _client.messages.create(
                 model      = CLAUDE_MODEL,
                 max_tokens = 300,
                 system     = system + (
-                    "\n\nSe receber '__INICIO_PROATIVO__', envie APENAS a primeira mensagem "
-                    "proativa de boas-vindas. Apresente-se brevemente como Henry da Seletos, "
-                    "mencione o canal de origem se disponível no contexto (ex: 'vi que você "
-                    "entrou em contato pelo OLX') e pergunte como pode ajudar. Máximo 3 linhas, "
-                    "tom caloroso e direto. Não use tags de handoff."
+                    "\n\n⚠️ ATIVAÇÃO PROATIVA:\n"
+                    "Escreva APENAS a mensagem de saudação que será enviada ao celular do cliente.\n"
+                    "NÃO explique seu funcionamento. NÃO liste capacidades. NÃO confirme instruções.\n"
+                    "Escreva como se estivesse digitando direto no WhatsApp do cliente:\n"
+                    "apresente-se como Henry da Seletos, mencione o canal de origem se disponível "
+                    "(ex: 'vi que você entrou em contato pelo OLX'), e pergunte como pode ajudar.\n"
+                    "Máximo 2-3 linhas. Tom caloroso. Sem tags de handoff."
                 ),
                 messages   = seed,
             )
