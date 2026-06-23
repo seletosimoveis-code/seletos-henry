@@ -505,13 +505,70 @@ class KommoClient:
 
     # ─── Para webhook Kommo (ativação proativa do Gabriel) ────────────────────
 
+    def _build_ctx_from_lead(self, lead: dict) -> dict:
+        """
+        Constrói o contexto do lead a partir do objeto já carregado.
+        Inclui extração de intenção via tags do Canal Pro (SELL/RENT).
+        """
+        ctx: dict = {"id": lead.get("id"), "name": lead.get("name", "")}
+
+        emb    = lead.get("_embedded") or {}
+        pipe   = emb.get("pipeline") or {}
+        status = emb.get("status")   or {}
+        ctx["pipeline"] = pipe.get("name", "")
+        ctx["stage"]    = status.get("name", "")
+        ctx["pipe_id"]  = lead.get("pipeline_id")
+
+        field_map = {
+            F_BAIRRO        : "bairro",
+            F_MOTIVO_BUSCA  : "motivo_busca",
+            F_DORMITORIOS   : "dormitorios",
+            F_URGENCIA      : "urgencia",
+            F_ORCAMENTO     : "orcamento",
+            F_MOTIVACAO     : "motivacao",
+            F_SITUACAO_ATUAL: "situacao_atual",
+            F_FINALIDADE    : "finalidade",
+            F_DATA_ENTRADA  : "data_entrada",
+            F_NUM_PESSOAS   : "num_pessoas",
+        }
+        for cf in (lead.get("custom_fields_values") or []):
+            fid  = cf.get("field_id")
+            vals = cf.get("values", [])
+            if not vals or fid not in field_map:
+                continue
+            val = vals[0].get("value") or ""
+            if not val:
+                val = (vals[0].get("enum_value") or {}).get("value", "")
+            if val:
+                ctx[field_map[fid]] = val
+
+        # Extrai intenção das tags Canal Pro/OLX (sem sobrescrever campo já preenchido)
+        tags = lead.get("tags") or []
+        tag_names = [t.get("name", "").upper() for t in tags if isinstance(t, dict) and t.get("name")]
+        if not ctx.get("motivo_busca"):
+            if "SELL" in tag_names:
+                ctx["motivo_busca"] = "Compra de imóvel"
+            elif "RENT" in tag_names:
+                ctx["motivo_busca"] = "Locação de imóvel"
+
+        # Canal de origem
+        for tag in tag_names:
+            if any(s in tag for s in ["OLX", "ZAP", "VIVAREAL", "CANAL PRO", "WEBCONNECT"]):
+                ctx["canal_origem"] = "Canal Pro / Grupo OLX"
+                break
+
+        return ctx
+
     def get_lead_phone_and_context(self, lead_id: int) -> tuple[str | None, str, dict]:
         """
         Dado um lead_id, retorna (phone, name, lead_context).
-        Usado pelo webhook do Kommo para ativar o Gabriel proativamente.
+        Usado pelo webhook do Kommo para ativar Henry e Gabriel proativamente.
         """
         try:
-            lead = self._get(f"leads/{lead_id}", {"with": "contacts,pipeline,status,custom_fields"})
+            lead = self._get(
+                f"leads/{lead_id}",
+                {"with": "contacts,pipeline,status,custom_fields,tags"},
+            )
         except Exception as e:
             logger.error(f"Erro ao buscar lead {lead_id}: {e}")
             return None, "", {}
@@ -539,7 +596,8 @@ class KommoClient:
             logger.warning(f"Lead {lead_id} sem telefone nos contatos")
             return None, name, {}
 
-        ctx = self.get_lead_context(phone)
+        # Constrói contexto direto do objeto já carregado (sem 2ª chamada)
+        ctx = self._build_ctx_from_lead(lead)
         return phone, name, ctx
 
     # ─── Pós-handoff Gabriel (qualificação concluída) ─────────────────────────

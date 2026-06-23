@@ -218,9 +218,22 @@ async def _process_kommo_event(raw: bytes, content_type: str):
 
     logger.info(f"Kommo parsed: {str(body)[:400]}")
 
-    leads_events = (body.get("leads") or {}).get("status", [])
-    if not leads_events:
-        logger.info("Kommo: sem eventos de status")
+    leads_body = body.get("leads") or {}
+
+    # ── Novos leads → Henry proativo ──────────────────────────────────────────
+    for event in leads_body.get("add", []):
+        try:
+            lead_id = int(event.get("id", 0))
+        except (TypeError, ValueError):
+            continue
+        if lead_id:
+            logger.info(f"Kommo leads[add] — lead_id={lead_id}")
+            asyncio.create_task(activate_henry_for_lead(lead_id))
+
+    # ── Mudança de status → Gabriel proativo ──────────────────────────────────
+    leads_events = leads_body.get("status", [])
+    if not leads_events and not leads_body.get("add"):
+        logger.info("Kommo: sem eventos de add ou status")
         return
 
     for event in leads_events:
@@ -236,6 +249,40 @@ async def _process_kommo_event(raw: bytes, content_type: str):
             logger.info(f"Pipeline {pipeline_id} nao e funil Gabriel")
             continue
         asyncio.create_task(activate_gabriel_for_lead(lead_id, pipeline_id, funil))
+
+
+async def activate_henry_for_lead(lead_id: int):
+    """
+    Ativa Henry proativamente quando novo lead chega no Kommo via qualquer canal
+    (OLX/Canal Pro, Instagram, Facebook, formulário web — sem WhatsApp direto).
+    """
+    try:
+        await asyncio.sleep(5)   # aguarda WebConnect/KWID finalizar enriquecimento
+        phone, name, lead_ctx = await asyncio.to_thread(
+            kommo.get_lead_phone_and_context, lead_id
+        )
+        if not phone:
+            logger.warning(f"Lead {lead_id} sem telefone — Henry nao ativado")
+            return
+
+        # Não reativa se já há atendimento em andamento para este número
+        if henry.is_human_mode(phone) or gabriel.is_active(phone) or gabriel.is_human_mode(phone):
+            logger.info(f"[{phone}] Ja tem atendimento ativo — nao reativa Henry")
+            return
+        if henry.get_history(phone):
+            logger.info(f"[{phone}] Henry ja tem historico para {phone} — nao reativa proativamente")
+            return
+
+        first_msg = await asyncio.to_thread(
+            henry.activate, phone, name, lead_ctx
+        )
+        await asyncio.to_thread(zapi.send_typing, phone, 2000)
+        await asyncio.sleep(2)
+        await asyncio.to_thread(zapi.send_text, phone, first_msg)
+        logger.info(f"[{phone}] Henry ativado proativamente — lead {lead_id}")
+
+    except Exception as e:
+        logger.error(f"Erro ao ativar Henry para lead {lead_id}: {e}", exc_info=True)
 
 
 async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):

@@ -83,6 +83,46 @@ class AgentManager:
         _human_mode.add(phone)
         logger.info(f"[{phone}] Modo humano ativado")
 
+    def activate(self, phone: str, sender_name: str, lead_context: dict) -> str:
+        """
+        Ativa Henry proativamente para leads que chegam via Kommo
+        (OLX, Canal Pro, Instagram, Facebook) sem enviar WhatsApp primeiro.
+        Gera a primeira mensagem de boas-vindas personalizada.
+        """
+        # Garante histórico limpo para este número
+        _conversations[phone] = []
+        _human_mode.discard(phone)
+
+        system = SYSTEM_PROMPT.replace(
+            "{lead_context}",
+            self._format_context(sender_name, lead_context),
+        )
+
+        seed = [{"role": "user", "content": "__INICIO_PROATIVO__"}]
+
+        try:
+            response = _client.messages.create(
+                model      = CLAUDE_MODEL,
+                max_tokens = 300,
+                system     = system + (
+                    "\n\nSe receber '__INICIO_PROATIVO__', envie APENAS a primeira mensagem "
+                    "proativa de boas-vindas. Apresente-se brevemente como Henry da Seletos, "
+                    "mencione o canal de origem se disponível no contexto (ex: 'vi que você "
+                    "entrou em contato pelo OLX') e pergunte como pode ajudar. Máximo 3 linhas, "
+                    "tom caloroso e direto. Não use tags de handoff."
+                ),
+                messages   = seed,
+            )
+            raw = response.content[0].text
+        except Exception as e:
+            logger.error(f"[{phone}] Henry activate erro: {e}")
+            raw = "Olá! 👋 Sou Henry da Seletos Imóveis. Vi que você entrou em contato conosco — como posso te ajudar hoje?"
+
+        clean = _HANDOFF_RE.sub("", raw).strip()
+        _conversations[phone].append({"role": "assistant", "content": clean})
+        logger.info(f"[{phone}] Henry ativado proativamente ({len(clean)} chars)")
+        return clean
+
     def record_outgoing(self, phone: str, text: str):
         """
         Registra mensagem enviada por humano (atendente) como turno do assistente.
@@ -107,8 +147,9 @@ class AgentManager:
             return f"Nome: {name or 'Desconhecido'}\nStatus: Lead novo — sem histórico no CRM."
 
         lines = [f"Nome: {ctx.get('name') or name or 'Desconhecido'}"]
-        if ctx.get("pipeline"): lines.append(f"Funil: {ctx['pipeline']}")
-        if ctx.get("stage"):    lines.append(f"Etapa: {ctx['stage']}")
+        if ctx.get("canal_origem"): lines.append(f"Canal de origem: {ctx['canal_origem']}")
+        if ctx.get("pipeline"):     lines.append(f"Funil: {ctx['pipeline']}")
+        if ctx.get("stage"):        lines.append(f"Etapa: {ctx['stage']}")
 
         # Dados já coletados na triagem (pelo Henry)
         ja_coletado = []
