@@ -39,17 +39,17 @@ F_BAIRRO        = 1328594   # text
 F_MOTIVO_BUSCA  = 1307202   # text
 F_IMOVEL_ORIG   = 1312438   # text
 
-# Campos novos — preencher após rodar kommo_setup_campos.py
-F_ORCAMENTO         = None   # text   — Orçamento
-F_FORMA_PAGAMENTO   = None   # select — Forma de Pagamento
-F_PRE_APROVACAO     = None   # select — Pré-aprovação
-F_MOTIVACAO         = None   # text   — Motivação
-F_SITUACAO_ATUAL    = None   # select — Situação Atual
-F_DATA_ENTRADA      = None   # text   — Data de Entrada
-F_NUM_PESSOAS       = None   # text   — Número de Pessoas
-F_FINALIDADE        = None   # select — Finalidade
-F_IMOVEL_VENDER     = None   # select — Tem Imóvel para Vender
-F_SCORE             = None   # select — Score de Qualificação
+# Campos novos — criados por kommo_setup_campos.py em 2026-06-23
+F_ORCAMENTO         = 1328828   # text   — Orçamento
+F_FORMA_PAGAMENTO   = 1328606   # select — Forma de Pagamento
+F_PRE_APROVACAO     = 1328836   # select — Pré-aprovação
+F_MOTIVACAO         = 1328830   # text   — Motivação
+F_SITUACAO_ATUAL    = 1328838   # select — Situação Atual
+F_DATA_ENTRADA      = 1328832   # text   — Data de Entrada
+F_NUM_PESSOAS       = 1328834   # text   — Número de Pessoas
+F_FINALIDADE        = 1328636   # select — Finalidade
+F_IMOVEL_VENDER     = 1328840   # select — Tem Imóvel para Vender
+F_SCORE             = 1328842   # select — Score de Qualificação
 
 # Tenta carregar IDs do arquivo gerado pelo setup
 import os, json as _json
