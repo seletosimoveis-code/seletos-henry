@@ -382,20 +382,17 @@ class KommoClient:
         lead_movido   = False
         if pipe_destino:
             status_destino = get_entry_status(pipe_destino)
+            logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino}, status_destino={status_destino}")
+            patch_payload: dict = {"id": lead_id, "pipeline_id": pipe_destino}
             if status_destino:
-                try:
-                    self._patch("leads", [{
-                        "id"         : lead_id,
-                        "pipeline_id": pipe_destino,
-                        "status_id"  : status_destino,
-                    }])
-                    lead_movido = True
-                    logger.info(f"Lead {lead_id} movido para pipeline {pipe_destino}")
-                    time.sleep(0.2)
-                except Exception as e:
-                    logger.error(f"Erro ao mover lead {lead_id} para pipeline {pipe_destino}: {e}")
-            else:
-                logger.warning(f"Sem status de entrada para pipeline {pipe_destino} (status_destino=None)")
+                patch_payload["status_id"] = status_destino
+            try:
+                self._patch("leads", [patch_payload])
+                lead_movido = True
+                logger.info(f"Lead {lead_id} movido para pipeline {pipe_destino}")
+                time.sleep(0.2)
+            except Exception as e:
+                logger.error(f"Erro ao mover lead {lead_id} para pipeline {pipe_destino}: {e}")
         else:
             logger.warning(
                 f"Pipeline destino nao encontrado para handoff '{handoff_reason}'. "

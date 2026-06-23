@@ -152,6 +152,25 @@ async def process_message(
             )
             henry.set_human_mode(phone)
 
+            # Ativa Gabriel diretamente — não depende do webhook Kommo
+            _FUNIL_MAP = {
+                "GABRIEL_ALUGUEL"     : "aluguel",
+                "GABRIEL_AVULSO"      : "avulso",
+                "GABRIEL_CAPTACAO"    : "captacao",
+                "GABRIEL_LANCAMENTOS" : "lancamentos",
+                "GABRIEL_INVESTIDOR"  : "investidor",
+            }
+            funil_gab = _FUNIL_MAP.get(handoff)
+            if funil_gab:
+                lead_ctx_gab = await asyncio.to_thread(kommo.get_lead_context, phone)
+                first_msg_gab = await asyncio.to_thread(
+                    gabriel.activate, phone, funil_gab, name, lead_ctx_gab
+                )
+                await asyncio.to_thread(zapi.send_typing, phone, 2500)
+                await asyncio.sleep(2.5)
+                await asyncio.to_thread(zapi.send_text, phone, first_msg_gab)
+                logger.info(f"[{phone}] Gabriel ativado diretamente — funil: {funil_gab}")
+
     except Exception as e:
         logger.error(f"[{phone}] Erro: {e}", exc_info=True)
         try:
