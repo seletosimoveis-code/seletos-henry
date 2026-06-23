@@ -213,7 +213,20 @@ class KommoClient:
 
     # ─── Busca de lead ────────────────────────────────────────────────────────
 
+    # Pipelines internos — leads nesses pipelines são ignorados pelo bot
+    _PIPELINES_INTERNOS = {
+        11487871,   # Equipe | Corretores Parceiros
+        11482967,   # Financeiro
+        11482963,   # Manutenção
+        11487879,   # Fornecedores
+    }
+
     def find_lead_by_phone(self, phone: str) -> dict | None:
+        """
+        Retorna o lead ativo mais recente para o telefone.
+        Ignora leads fechados (ganho/perdido) e leads em pipelines internos
+        (Equipe, Financeiro, Manutenção, Fornecedores).
+        """
         norm = _norm_phone(phone)
         try:
             data     = self._get("contacts", {"query": norm, "with": "leads", "limit": 5})
@@ -222,9 +235,16 @@ class KommoClient:
                 leads = (contact.get("_embedded") or {}).get("leads", [])
                 if not leads:
                     continue
-                lead_id = sorted(leads, key=lambda l: l["id"])[-1]["id"]
-                lead    = self._get(f"leads/{lead_id}", {"with": "pipeline,status,custom_fields"})
-                if lead.get("status_id") not in (STATUS_GANHO, STATUS_PERDIDO):
+                # Tenta do mais recente para o mais antigo
+                for stub in sorted(leads, key=lambda l: l["id"], reverse=True):
+                    lead = self._get(f"leads/{stub['id']}", {"with": "pipeline,status,custom_fields"})
+                    # Ignora fechados
+                    if lead.get("status_id") in (STATUS_GANHO, STATUS_PERDIDO):
+                        continue
+                    # Ignora pipelines internos
+                    if lead.get("pipeline_id") in self._PIPELINES_INTERNOS:
+                        logger.info(f"Lead {lead['id']} ignorado — pipeline interno {lead.get('pipeline_id')}")
+                        continue
                     return lead
         except Exception as e:
             logger.warning(f"Erro ao buscar lead {norm}: {e}")
