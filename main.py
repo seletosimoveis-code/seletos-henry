@@ -103,6 +103,12 @@ async def webhook_zapi(request: Request):
     if not phone or (not text and not is_audio):
         return JSONResponse({"status": "ignored", "reason": "empty phone or text/audio"})
 
+    # Z-API envia esse texto quando o cliente usa a função "responder a mensagem" (quote/reply).
+    # Não é uma mensagem real — ignorar silenciosamente para não confundir Henry.
+    if "'messageContextInfo' is not yet supported" in (text or ""):
+        logger.info(f"[{phone}] messageContextInfo ignorado (reply de Z-API)")
+        return JSONResponse({"status": "ignored", "reason": "messageContextInfo"})
+
     if body.get("fromMe"):
         # Mensagem enviada pelo atendente humano — registra no histórico sem responder.
         asyncio.create_task(record_outgoing_message(phone, text or "[áudio]"))
