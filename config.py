@@ -18,8 +18,11 @@ KOMMO_TOKEN     = os.environ.get("KOMMO_TOKEN", "")
 # ─── Anthropic (Claude) ───────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-# Modelo: haiku = mais rápido/barato | sonnet = mais inteligente
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+# Henry (SDR) — modelo rápido/barato para triagem simples
+CLAUDE_MODEL  = os.environ.get("CLAUDE_MODEL",  "claude-haiku-4-5-20251001")
+
+# Gabriel (Qualificador) — modelo mais inteligente; fallback para CLAUDE_MODEL
+GABRIEL_MODEL = os.environ.get("GABRIEL_MODEL", CLAUDE_MODEL)
 
 # ─── Z-API ────────────────────────────────────────────────────────────────────
 ZAPI_INSTANCE_ID  = os.environ.get("ZAPI_INSTANCE_ID", "")

@@ -13,7 +13,7 @@ Estado em memória por número de telefone.
 import re
 import logging
 from anthropic import Anthropic
-from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
+from config import ANTHROPIC_API_KEY, GABRIEL_MODEL, MAX_HISTORY
 from gabriel.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ class GabrielManager:
 
         try:
             response = _client.messages.create(
-                model      = CLAUDE_MODEL,
+                model      = GABRIEL_MODEL,
                 max_tokens = 400,
                 system     = system + "\n\nSe receber '__INICIO__', envie apenas a PRIMEIRA MENSAGEM proativa definida no seu prompt, sem mais nada.",
                 messages   = seed,
@@ -98,7 +98,7 @@ class GabrielManager:
 
         try:
             response = _client.messages.create(
-                model      = CLAUDE_MODEL,
+                model      = GABRIEL_MODEL,
                 max_tokens = 500,
                 system     = system,
                 messages   = history,
