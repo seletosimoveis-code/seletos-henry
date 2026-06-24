@@ -64,11 +64,28 @@ class GabrielManager:
         # Inject a "start" user turn para forçar Gabriel a gerar a 1ª mensagem
         seed = [{"role": "user", "content": "__INICIO__"}]
 
+        # Se Henry já coletou dados, Gabriel usa o contexto para não repetir perguntas
+        _CAMPOS_HENRY = ["tipo_imovel", "dormitorios", "garagem", "orcamento", "bairro", "data_entrada", "motivo_busca"]
+        dados_henry = [k for k in _CAMPOS_HENRY if lead_context.get(k)]
+        if dados_henry:
+            init_instruction = (
+                "\n\nSe receber '__INICIO__': o Henry já coletou dados do cliente (veja CONTEXTO DO LEAD acima). "
+                "NÃO repita perguntas sobre o que já está preenchido. "
+                "Envie uma mensagem de boas-vindas personalizada mencionando o que já sabe "
+                "(ex: tipo de imóvel, bairro, orçamento) e pergunte APENAS o que ainda falta para a qualificação. "
+                "Seja específico — mostre que você leu o perfil do Henry."
+            )
+        else:
+            init_instruction = (
+                "\n\nSe receber '__INICIO__', envie apenas a PRIMEIRA MENSAGEM proativa "
+                "definida no seu prompt, sem mais nada."
+            )
+
         try:
             response = _client.messages.create(
                 model      = GABRIEL_MODEL,
                 max_tokens = 400,
-                system     = system + "\n\nSe receber '__INICIO__', envie apenas a PRIMEIRA MENSAGEM proativa definida no seu prompt, sem mais nada.",
+                system     = system + init_instruction,
                 messages   = seed,
             )
             raw = response.content[0].text
@@ -226,15 +243,17 @@ class GabrielManager:
 
         coletados = []
         mapping = {
-            "motivo_busca" : "Interesse",
-            "bairro"       : "Bairro",
-            "orcamento"    : "Orçamento",
-            "data_entrada" : "Prazo",
-            "dormitorios"  : "Quartos",
-            "motivacao"    : "Motivação",
+            "motivo_busca"  : "Interesse",
+            "tipo_imovel"   : "Tipo de imóvel",
+            "dormitorios"   : "Quartos",
+            "garagem"       : "Garagem",
+            "bairro"        : "Bairro",
+            "orcamento"     : "Orçamento",
+            "data_entrada"  : "Prazo",
+            "motivacao"     : "Motivação",
             "situacao_atual": "Situação atual",
-            "finalidade"   : "Finalidade",
-            "num_pessoas"  : "Nº de pessoas",
+            "finalidade"    : "Finalidade",
+            "num_pessoas"   : "Nº de pessoas",
         }
         for key, label in mapping.items():
             val = ctx.get(key)

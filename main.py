@@ -39,6 +39,23 @@ kommo   = KommoClient()
 # Rate limiting: phone → lista de timestamps das últimas mensagens
 _rate_timestamps: dict[str, list[float]] = {}
 
+# Deduplicação: evita processar a mesma mensagem duas vezes em 30 segundos
+# (Z-API às vezes envia webhooks duplicados; Kommo message[add] pode chegar junto com Z-API)
+_msg_dedup: dict[str, float] = {}   # "phone:hash" → timestamp
+_processing_phones: set[str] = set()  # phones com process_message em andamento
+
+def _is_duplicate_message(phone: str, text: str) -> bool:
+    """True se a mesma mensagem já foi processada nos últimos 30 segundos para este número."""
+    key = f"{phone}:{hash(text) & 0xFFFFFF}"
+    now = time.time()
+    for k in list(_msg_dedup):
+        if now - _msg_dedup[k] > 30:
+            del _msg_dedup[k]
+    if key in _msg_dedup:
+        return True
+    _msg_dedup[key] = now
+    return False
+
 def _is_rate_limited(phone: str) -> bool:
     """Retorna True se o número excedeu o limite de mensagens por minuto."""
     now = time.time()
@@ -117,11 +134,37 @@ async def webhook_zapi(request: Request):
     if _is_rate_limited(phone):
         return JSONResponse({"status": "ignored", "reason": "rate limit"})
 
+    if _is_duplicate_message(phone, text or audio_url):
+        logger.warning(f"[{phone}] Mensagem duplicada detectada — ignorando")
+        return JSONResponse({"status": "ignored", "reason": "duplicate"})
+
     asyncio.create_task(process_message(phone, text, name, audio_url=audio_url, audio_mime=audio_mime))
     return JSONResponse({"status": "queued"})
 
 
 async def process_message(
+    phone: str,
+    text: str,
+    name: str,
+    audio_url: str = "",
+    audio_mime: str = "audio/ogg",
+):
+    # ── Lock por telefone: evita processar duas mensagens do mesmo número em paralelo ──
+    if phone in _processing_phones:
+        logger.info(f"[{phone}] Já processando — aguardando 3s antes de descartar")
+        await asyncio.sleep(3)
+        if phone in _processing_phones:
+            logger.warning(f"[{phone}] Ainda em processamento — descartando mensagem concorrente")
+            return
+    _processing_phones.add(phone)
+
+    try:
+        await _process_message_inner(phone, text, name, audio_url=audio_url, audio_mime=audio_mime)
+    finally:
+        _processing_phones.discard(phone)
+
+
+async def _process_message_inner(
     phone: str,
     text: str,
     name: str,

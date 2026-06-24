@@ -379,15 +379,18 @@ class KommoClient:
         pipe_destino  = HANDOFF_PIPELINE.get(handoff_reason)
         lead_movido   = False
         if pipe_destino:
-            logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino}")
-            # Não inclui status_id — Kommo atribui automaticamente o status de entrada do pipeline destino
+            logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino} (handoff={handoff_reason})")
             try:
-                self._patch("leads", [{"id": lead_id, "pipeline_id": pipe_destino}])
+                resp = self._patch("leads", [{"id": lead_id, "pipeline_id": pipe_destino}])
                 lead_movido = True
-                logger.info(f"Lead {lead_id} movido para pipeline {pipe_destino}")
+                logger.info(f"Lead {lead_id} movido → pipeline {pipe_destino}. Kommo resp: {str(resp)[:120]}")
                 time.sleep(0.2)
             except Exception as e:
-                logger.error(f"Erro ao mover lead {lead_id} para pipeline {pipe_destino}: {e}")
+                logger.error(
+                    f"FALHA ao mover lead {lead_id} → pipeline {pipe_destino} "
+                    f"(handoff={handoff_reason}): {e}",
+                    exc_info=True,
+                )
         else:
             logger.warning(
                 f"Pipeline destino nao encontrado para handoff '{handoff_reason}'. "
@@ -449,13 +452,41 @@ class KommoClient:
         if handoff_reason in _MOTIVO_MAP:
             dados["motivo"] = _MOTIVO_MAP[handoff_reason]
 
-        # Orçamento básico mencionado na triagem
+        # Tipo de imóvel
+        tipo_m = re.search(
+            r'\b(casa|apartamento|apto|studio|kitnet|loft|sobrado|sala\s+comercial)\b',
+            texto, re.IGNORECASE
+        )
+        if tipo_m:
+            dados["tipo_imovel"] = tipo_m.group(1).lower()
+
+        # Dormitórios / quartos
+        dorm_m = re.search(r'(\d+)\s*(?:quarto|dormitório|suite|suíte)', texto, re.IGNORECASE)
+        if dorm_m:
+            dados["dormitorios"] = dorm_m.group(1)
+
+        # Garagem / vaga
+        if re.search(r'\bgaragem\b|\bvaga\b', texto, re.IGNORECASE):
+            dados["garagem"] = "Sim"
+
+        # Orçamento — prioridade: R$ + número
         m = re.search(
             r"(r\$?\s*[\d.,]+\s*(?:mil|k)?(?:\s*[-–]\s*r?\$?\s*[\d.,]+\s*(?:mil|k)?)?)",
             texto, re.IGNORECASE
         )
         if m:
             dados["orcamento"] = m.group(1).strip()
+        else:
+            # Fallback: "X mil reais" / "X mil" / "mil reais" (sem R$)
+            m_mil = re.search(r'(\d+[\d.,]*)\s*mil(?:\s*reais?)?', texto, re.IGNORECASE)
+            if m_mil:
+                try:
+                    val = float(m_mil.group(1).replace('.', '').replace(',', '.')) * 1000
+                    dados["orcamento"] = f"R$ {val:,.0f}".replace(',', '.')
+                except Exception:
+                    dados["orcamento"] = f"{m_mil.group(1)} mil reais"
+            elif re.search(r'\bmil\s+reais?\b', texto, re.IGNORECASE):
+                dados["orcamento"] = "R$ 1.000,00"
 
         # Prazo / data de entrada
         m = re.search(
@@ -610,6 +641,12 @@ class KommoClient:
             result["data_entrada"] = raw["data_entrada"]
         if raw.get("motivo"):
             result["motivo_busca"] = raw["motivo"]
+        if raw.get("tipo_imovel"):
+            result["tipo_imovel"] = raw["tipo_imovel"]
+        if raw.get("dormitorios"):
+            result["dormitorios"] = raw["dormitorios"]
+        if raw.get("garagem"):
+            result["garagem"] = raw["garagem"]
         return result
 
     def get_lead_id_for_contact(self, contact_id: int) -> int | None:
