@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, GABRIEL_MODEL, MAX_HISTORY, GABRIEL_MAX_TURNS
 from gabriel.prompts import get_prompt
+from site_seletos import fetch_imovel_details, extract_ref_from_text
 
 # Fuso de Brasília: UTC-3 fixo (Brasil não usa horário de verão desde 2019)
 _BR_TZ = timezone(timedelta(hours=-3))
@@ -117,6 +118,16 @@ class GabrielManager:
 
         system = self._build_system(funil, sender_name, lead_context)
 
+        # ── Busca detalhes do imóvel mencionado pelo cliente ──────────────────
+        ref = extract_ref_from_text(user_message)
+        if ref:
+            imovel_info = fetch_imovel_details(ref)
+            if imovel_info:
+                system = system + f"\n\n{imovel_info}"
+                logger.info(f"[{phone}] Imóvel #{ref} carregado para contexto Gabriel")
+            else:
+                logger.info(f"[{phone}] Ref #{ref} não encontrada no site — Gabriel responde sem detalhes")
+
         try:
             response = _client.messages.create(
                 model      = GABRIEL_MODEL,
@@ -191,13 +202,13 @@ class GabrielManager:
             now_br       = datetime.now(_BR_TZ)
             hora_str     = now_br.strftime("%H:%M")
             dia_str      = _DIAS_SEMANA[now_br.weekday()]
-            is_comercial = (now_br.weekday() < 5) and (9 <= now_br.hour < 17)
+            is_comercial = (now_br.weekday() < 5) and (8 <= now_br.hour < 17)
             bloco_hora   = f"\n\n⏰ HORA ATUAL (Brasília): {hora_str} ({dia_str}-feira).\n"
             if not is_comercial:
                 bloco_hora += (
-                    "⚠️ FORA DO HORÁRIO COMERCIAL (seg–sex, 9h–17h). "
+                    "⚠️ FORA DO HORÁRIO COMERCIAL (seg–sex, 8h–17h). "
                     "NÃO diga 'o corretor vai te retornar rapidinho'. "
-                    "Use: 'Nossa equipe entra em contato no próximo horário comercial (seg–sex, 9h–17h) 😊'\n"
+                    "Use: 'Nossa equipe entra em contato no próximo horário comercial (seg–sex, 8h–17h) 😊'\n"
                 )
             prompt += bloco_hora
         except Exception:

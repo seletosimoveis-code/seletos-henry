@@ -41,3 +41,7 @@ GABRIEL_MAX_TURNS = int(os.environ.get("GABRIEL_MAX_TURNS", "25"))
 
 # Rate limit: máximo de mensagens por minuto por número (anti-spam / anti-bot)
 RATE_LIMIT_MAX_PER_MIN = int(os.environ.get("RATE_LIMIT_MAX_PER_MIN", "8"))
+
+# Proteção anti-reativação após restart: Henry só ativa proativamente leads criados
+# nas últimas N horas. Evita reativação em leads antigos já atendidos por humanos.
+HENRY_MAX_LEAD_AGE_HOURS = int(os.environ.get("HENRY_MAX_LEAD_AGE_HOURS", "12"))

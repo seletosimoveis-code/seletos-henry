@@ -22,7 +22,7 @@ from kommo import (
     PIPE_ALUGUEL, PIPE_AVULSO,
     get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
 )
-from config import RATE_LIMIT_MAX_PER_MIN
+from config import RATE_LIMIT_MAX_PER_MIN, HENRY_MAX_LEAD_AGE_HOURS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -383,6 +383,17 @@ async def activate_henry_for_lead(lead_id: int):
             return
         if henry.get_history(phone):
             logger.info(f"[{phone}] Henry ja tem historico para {phone} — nao reativa proativamente")
+            return
+
+        # Guard de reativação após restart: só ativa Henry para leads "frescos"
+        # Evita que um restart do Railway reative o Henry em leads já atendidos
+        created_at  = lead_ctx.get("created_at", 0)
+        lead_age_h  = (time.time() - created_at) / 3600 if created_at else 0
+        if lead_age_h > HENRY_MAX_LEAD_AGE_HOURS:
+            logger.info(
+                f"[{phone}] Lead {lead_id} tem {lead_age_h:.1f}h — "
+                f"acima do limite de {HENRY_MAX_LEAD_AGE_HOURS}h para ativação proativa. Ignorando."
+            )
             return
 
         # Se motivação já é conhecida (Canal Pro SELL/RENT), move o lead para o funil correto

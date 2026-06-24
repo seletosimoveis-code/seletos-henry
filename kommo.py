@@ -72,9 +72,10 @@ if os.path.exists(_ids_file):
         logger.warning(f"Não foi possível carregar kommo_campos_ids.json: {e}")
 
 # ─── Pipelines e status ───────────────────────────────────────────────────────
-PIPE_RECEPCAO   = 9959303
-PIPE_ALUGUEL    = 11482927
-PIPE_AVULSO     = 11482943
+PIPE_RECEPCAO     = 9959303
+PIPE_ALUGUEL      = 11482927
+PIPE_AVULSO       = 11482943
+PIPE_FORNECEDORES = 11487879   # pipeline interno — bot nunca responde a leads aqui
 
 STATUS_GANHO    = 142
 STATUS_PERDIDO  = 143
@@ -373,6 +374,7 @@ class KommoClient:
             "GABRIEL_LANCAMENTOS" : get_pipe_lancamentos(),
             "GABRIEL_INVESTIDOR"  : get_pipe_investidor(),
             "CORRETOR"            : get_pipe_corretores(),
+            "FORNECEDOR"          : PIPE_FORNECEDORES,
         }
         pipe_destino  = HANDOFF_PIPELINE.get(handoff_reason)
         lead_movido   = False
@@ -432,24 +434,20 @@ class KommoClient:
                 dados["bairro"] = b
                 break
 
-        # Motivo — inferido pelo tipo de handoff ou pelo texto
-        if handoff_reason in ("GABRIEL_ALUGUEL",):
-            dados["motivo"] = "Locação"
-        elif handoff_reason in ("GABRIEL_AVULSO",):
-            dados["motivo"] = "Compra"
-        elif handoff_reason in ("GABRIEL_CAPTACAO",):
-            dados["motivo"] = "Proprietário"
-        elif handoff_reason in ("GABRIEL_LANCAMENTOS",):
-            dados["motivo"] = "Lançamento"
-        elif handoff_reason in ("GABRIEL_INVESTIDOR",):
-            dados["motivo"] = "Investidor"
-        elif handoff_reason in ("CORRETOR",):
-            dados["motivo"] = "Corretor parceiro"
-        else:
-            if re.search(r"\b(alug|loca[çc])", texto, re.IGNORECASE):
-                dados["motivo"] = "Locação"
-            elif re.search(r"\b(comprar?|compra|vend|adquirir)", texto, re.IGNORECASE):
-                dados["motivo"] = "Compra"
+        # Motivo — sempre derivado do tipo de handoff (nunca por regex, evita falso-positivo)
+        _MOTIVO_MAP = {
+            "GABRIEL_ALUGUEL"     : "Locação",
+            "GABRIEL_AVULSO"      : "Compra",
+            "GABRIEL_CAPTACAO"    : "Proprietário",
+            "GABRIEL_LANCAMENTOS" : "Lançamento",
+            "GABRIEL_INVESTIDOR"  : "Investidor",
+            "CORRETOR"            : "Corretor parceiro",
+            "FORNECEDOR"          : "Fornecedor / Prestador",
+            "SUPORTE"             : "Cliente Ativo (Suporte)",
+            "OUTRO"               : "Outro",
+        }
+        if handoff_reason in _MOTIVO_MAP:
+            dados["motivo"] = _MOTIVO_MAP[handoff_reason]
 
         # Orçamento básico mencionado na triagem
         m = re.search(
@@ -492,6 +490,7 @@ class KommoClient:
             "GABRIEL_CAPTACAO"    : f"🤖 Henry: PROPRIETÁRIO identificado. Time de captação deve contatar.{aviso_nao_movido}",
             "GABRIEL_LANCAMENTOS" : f"🤖 Henry: lead de LANÇAMENTO triado. Gabriel assume a qualificação.{aviso_nao_movido}",
             "GABRIEL_INVESTIDOR"  : f"🤖 Henry: INVESTIDOR identificado. Gabriel assume a qualificação.{aviso_nao_movido}",
+            "FORNECEDOR"          : f"📦 Henry: FORNECEDOR/PRESTADOR identificado. Time administrativo deve contatar.{aviso_nao_movido}",
             "SUPORTE"             : "🏘️ Henry: CLIENTE ATIVO com demanda de suporte/manutenção. Atendimento ao cliente deve contatar.",
             "CORRETOR"            : f"🤖 Henry: CORRETOR PARCEIRO identificado. Time de parcerias deve contatar.{aviso_nao_movido}",
             "URGENTE"             : "⚡ Henry: URGENTE — lead precisa de atendimento imediato!",
@@ -509,8 +508,9 @@ class KommoClient:
             "GABRIEL_CAPTACAO"    : "🔑 Proprietário",
             "GABRIEL_LANCAMENTOS" : "🏗️ Comprador (Lançamento)",
             "GABRIEL_INVESTIDOR"  : "📈 Investidor",
+            "FORNECEDOR"          : "📦 Fornecedor / Prestador",
             "SUPORTE"             : "🏘️ Cliente ativo (suporte)",
-            "CORRETOR"         : "🤝 Corretor parceiro",
+            "CORRETOR"            : "🤝 Corretor parceiro",
             "URGENTE"          : "⚡ Urgente",
             "SOLICITADO"       : "🙋 Solicitou humano",
             "JURIDICO"         : "⚖️ Dúvida jurídica",
@@ -549,9 +549,10 @@ class KommoClient:
         emb    = lead.get("_embedded") or {}
         pipe   = emb.get("pipeline") or {}
         status = emb.get("status")   or {}
-        ctx["pipeline"] = pipe.get("name", "")
-        ctx["stage"]    = status.get("name", "")
-        ctx["pipe_id"]  = lead.get("pipeline_id")
+        ctx["pipeline"]   = pipe.get("name", "")
+        ctx["stage"]      = status.get("name", "")
+        ctx["pipe_id"]    = lead.get("pipeline_id")
+        ctx["created_at"] = lead.get("created_at", 0)   # timestamp Unix — usado para guard de reativação
 
         field_map = {
             F_BAIRRO        : "bairro",
