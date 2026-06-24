@@ -5,6 +5,7 @@ Servidor FastAPI da Seletos Imoveis.
 """
 
 import re
+import time
 import json as json_lib
 import logging
 import asyncio
@@ -21,6 +22,7 @@ from kommo import (
     PIPE_ALUGUEL, PIPE_AVULSO,
     get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
 )
+from config import RATE_LIMIT_MAX_PER_MIN
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,6 +35,20 @@ henry   = AgentManager()
 gabriel = GabrielManager()
 zapi    = ZAPIClient()
 kommo   = KommoClient()
+
+# Rate limiting: phone → lista de timestamps das últimas mensagens
+_rate_timestamps: dict[str, list[float]] = {}
+
+def _is_rate_limited(phone: str) -> bool:
+    """Retorna True se o número excedeu o limite de mensagens por minuto."""
+    now = time.time()
+    timestamps = _rate_timestamps.setdefault(phone, [])
+    timestamps[:] = [t for t in timestamps if now - t < 60]
+    if len(timestamps) >= RATE_LIMIT_MAX_PER_MIN:
+        logger.warning(f"[{phone}] Rate limit atingido ({RATE_LIMIT_MAX_PER_MIN} msg/min) — ignorando")
+        return True
+    timestamps.append(now)
+    return False
 
 
 @app.on_event("startup")
@@ -92,6 +108,9 @@ async def webhook_zapi(request: Request):
         asyncio.create_task(record_outgoing_message(phone, text or "[áudio]"))
         return JSONResponse({"status": "recorded", "reason": "fromMe — adicionado ao histórico"})
 
+    if _is_rate_limited(phone):
+        return JSONResponse({"status": "ignored", "reason": "rate limit"})
+
     asyncio.create_task(process_message(phone, text, name, audio_url=audio_url, audio_mime=audio_mime))
     return JSONResponse({"status": "queued"})
 
@@ -115,8 +134,14 @@ async def process_message(
 
     logger.info(f"[{phone}] Mensagem: {text[:80]}")
     try:
-        if gabriel.is_human_mode(phone) or henry.is_human_mode(phone):
-            logger.info(f"[{phone}] Modo humano ativo — ignorando")
+        # Gabriel ativo: só bloqueia se Gabriel estiver em modo humano
+        if gabriel.is_active(phone):
+            if gabriel.is_human_mode(phone):
+                logger.info(f"[{phone}] Gabriel em modo humano — ignorando")
+                return
+        # Henry ativo: só bloqueia se Henry estiver em modo humano (e Gabriel não estiver ativo)
+        elif henry.is_human_mode(phone):
+            logger.info(f"[{phone}] Henry em modo humano — ignorando")
             return
 
         lead_ctx = await asyncio.to_thread(kommo.get_lead_context, phone)

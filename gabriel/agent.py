@@ -13,7 +13,7 @@ Estado em memória por número de telefone.
 import re
 import logging
 from anthropic import Anthropic
-from config import ANTHROPIC_API_KEY, GABRIEL_MODEL, MAX_HISTORY
+from config import ANTHROPIC_API_KEY, GABRIEL_MODEL, MAX_HISTORY, GABRIEL_MAX_TURNS
 from gabriel.prompts import get_prompt
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ _gabriel_conversations: dict[str, list[dict]] = {}
 _gabriel_funil:         dict[str, str]         = {}   # phone → funil ativo
 _gabriel_mode:          set[str]               = set()  # phones com Gabriel ativo
 _human_mode:            set[str]               = set()  # phones em modo humano final
+_gabriel_turn_count:    dict[str, int]         = {}   # phone → nº de turnos do cliente
 
 _client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -92,6 +93,21 @@ class GabrielManager:
         """
         funil   = _gabriel_funil.get(phone, "avulso")
         history = _gabriel_conversations.setdefault(phone, [])
+
+        # ── Limite de turnos (anti-loop / anti-abuso) ─────────────────────────
+        turn = _gabriel_turn_count.get(phone, 0) + 1
+        _gabriel_turn_count[phone] = turn
+        if turn > GABRIEL_MAX_TURNS:
+            logger.warning(f"[{phone}] Gabriel: limite de {GABRIEL_MAX_TURNS} turnos atingido — encerrando")
+            self.set_human_mode(phone)
+            encerramento = (
+                "Já coletei todas as informações que precisava! 😊 "
+                "Um corretor da Seletos vai entrar em contato em breve para dar continuidade. "
+                "Até logo! 👋"
+            )
+            history.append({"role": "assistant", "content": encerramento})
+            return encerramento, "MAX_TURNS"
+
         history.append({"role": "user", "content": user_message})
 
         system = self._build_system(funil, sender_name, lead_context)
@@ -154,6 +170,7 @@ class GabrielManager:
         _human_mode.discard(phone)
         _gabriel_conversations.pop(phone, None)
         _gabriel_funil.pop(phone, None)
+        _gabriel_turn_count.pop(phone, None)
         logger.info(f"[{phone}] Gabriel resetado")
 
     # ─── Helpers ──────────────────────────────────────────────────────────────

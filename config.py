@@ -35,3 +35,9 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 # ─── Bot ──────────────────────────────────────────────────────────────────────
 # Máximo de mensagens no histórico por conversa
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", "40"))
+
+# Gabriel: máximo de turnos antes de passar para corretor (anti-loop / anti-abuso)
+GABRIEL_MAX_TURNS = int(os.environ.get("GABRIEL_MAX_TURNS", "25"))
+
+# Rate limit: máximo de mensagens por minuto por número (anti-spam / anti-bot)
+RATE_LIMIT_MAX_PER_MIN = int(os.environ.get("RATE_LIMIT_MAX_PER_MIN", "8"))
