@@ -319,15 +319,11 @@ class KommoClient:
             logger.warning(f"Não foi possível verificar pipeline do lead {lead_id}: {e}")
             return False
 
-        status_destino = get_entry_status(pipe_destino)
-        if not status_destino:
-            logger.warning(f"Sem status de entrada para pipeline {pipe_destino}")
-            return False
         try:
+            # Não inclui status_id — Kommo atribui o status de entrada automaticamente
             self._patch("leads", [{
                 "id"         : lead_id,
                 "pipeline_id": pipe_destino,
-                "status_id"  : status_destino,
             }])
             logger.info(f"Lead {lead_id} auto-movido para pipeline {pipe_destino} (motivo: {motivo_busca})")
             return True
@@ -381,13 +377,10 @@ class KommoClient:
         pipe_destino  = HANDOFF_PIPELINE.get(handoff_reason)
         lead_movido   = False
         if pipe_destino:
-            status_destino = get_entry_status(pipe_destino)
-            logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino}, status_destino={status_destino}")
-            patch_payload: dict = {"id": lead_id, "pipeline_id": pipe_destino}
-            if status_destino:
-                patch_payload["status_id"] = status_destino
+            logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino}")
+            # Não inclui status_id — Kommo atribui automaticamente o status de entrada do pipeline destino
             try:
-                self._patch("leads", [patch_payload])
+                self._patch("leads", [{"id": lead_id, "pipeline_id": pipe_destino}])
                 lead_movido = True
                 logger.info(f"Lead {lead_id} movido para pipeline {pipe_destino}")
                 time.sleep(0.2)
@@ -599,6 +592,37 @@ class KommoClient:
                 break
 
         return ctx
+
+    def extract_henry_data(self, texto: str, handoff_reason: str) -> dict:
+        """
+        Extrai dados básicos da conversa do Henry e retorna com as mesmas chaves
+        do get_lead_context — usado para complementar o contexto do Gabriel sem
+        depender de propagação do CRM.
+        """
+        raw = self._extrair_dados_triagem(texto, handoff_reason)
+        result: dict = {}
+        if raw.get("orcamento"):
+            result["orcamento"] = raw["orcamento"]
+        if raw.get("bairro"):
+            result["bairro"] = raw["bairro"]
+        if raw.get("data_entrada"):
+            result["data_entrada"] = raw["data_entrada"]
+        if raw.get("motivo"):
+            result["motivo_busca"] = raw["motivo"]
+        return result
+
+    def get_lead_id_for_contact(self, contact_id: int) -> int | None:
+        """Retorna o lead ativo mais recente para um contact_id do Kommo."""
+        try:
+            contact = self._get(f"contacts/{contact_id}", {"with": "leads"})
+            leads   = (contact.get("_embedded") or {}).get("leads", [])
+            for stub in sorted(leads, key=lambda l: l["id"], reverse=True):
+                lid = stub.get("id")
+                if lid:
+                    return int(lid)
+        except Exception as e:
+            logger.error(f"Erro ao buscar lead para contact {contact_id}: {e}")
+        return None
 
     def get_lead_phone_and_context(self, lead_id: int) -> tuple[str | None, str, dict]:
         """

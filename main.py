@@ -188,6 +188,14 @@ async def process_message(
             funil_gab = _FUNIL_MAP.get(handoff)
             if funil_gab:
                 lead_ctx_gab = await asyncio.to_thread(kommo.get_lead_context, phone)
+                # Complementa com dados extraídos do histórico do Henry
+                # (garante que orçamento, bairro etc. cheguem ao Gabriel mesmo que
+                #  a atualização do CRM ainda não tenha sido propagada)
+                henry_texto = " ".join(m["content"] for m in henry.get_history(phone))
+                extra_ctx   = await asyncio.to_thread(kommo.extract_henry_data, henry_texto, handoff)
+                for k, v in extra_ctx.items():
+                    if v and not lead_ctx_gab.get(k):
+                        lead_ctx_gab[k] = v
                 first_msg_gab = await asyncio.to_thread(
                     gabriel.activate, phone, funil_gab, name, lead_ctx_gab
                 )
@@ -286,6 +294,26 @@ async def _process_kommo_event(raw: bytes, content_type: str):
 
     leads_body = body.get("leads") or {}
 
+    # ── Mensagens via chat (Wimoveis, Instagram, FB, web forms) → Henry proativo ─
+    # Kommo envia message[add] quando um lead manda mensagem por canal não-WhatsApp.
+    # Ativamos Henry da mesma forma que fazemos para leads[add].
+    messages_body = body.get("message") or {}
+    for event in messages_body.get("add", []):
+        # Kommo usa notação PHP: message[add][0][contact_id]
+        # → parseado como {'0': {'contact_id': '123', ...}}
+        msg_data = event.get("0") if isinstance(event, dict) and "0" in event else event
+        if not isinstance(msg_data, dict):
+            continue
+        try:
+            contact_id  = int(msg_data.get("contact_id", 0) or 0)
+            entity_type = msg_data.get("entity_type", "")
+        except (TypeError, ValueError):
+            continue
+        # entity_type '2' = lead; também aceitamos string 'lead'
+        if contact_id and entity_type in ("2", "lead"):
+            logger.info(f"Kommo message[add] — contact_id={contact_id} (canal web/chat)")
+            asyncio.create_task(activate_henry_for_contact(contact_id))
+
     # ── Novos leads → Henry proativo ──────────────────────────────────────────
     for event in leads_body.get("add", []):
         try:
@@ -315,6 +343,24 @@ async def _process_kommo_event(raw: bytes, content_type: str):
             logger.info(f"Pipeline {pipeline_id} nao e funil Gabriel")
             continue
         asyncio.create_task(activate_gabriel_for_lead(lead_id, pipeline_id, funil))
+
+
+async def activate_henry_for_contact(contact_id: int):
+    """
+    Ativa Henry para um contato que enviou mensagem via canal não-WhatsApp
+    (Wimoveis, Instagram, Facebook, formulário web).
+    Busca o lead_id pelo contact_id e delega para activate_henry_for_lead.
+    """
+    try:
+        await asyncio.sleep(3)   # aguarda enriquecimento do Kommo
+        lead_id = await asyncio.to_thread(kommo.get_lead_id_for_contact, contact_id)
+        if not lead_id:
+            logger.warning(f"Contact {contact_id} sem lead ativo — Henry não ativado")
+            return
+        logger.info(f"Contact {contact_id} → lead {lead_id} — ativando Henry")
+        await activate_henry_for_lead(lead_id)
+    except Exception as e:
+        logger.error(f"Erro ao ativar Henry para contact {contact_id}: {e}", exc_info=True)
 
 
 async def activate_henry_for_lead(lead_id: int):
