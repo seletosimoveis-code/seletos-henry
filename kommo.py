@@ -649,6 +649,29 @@ class KommoClient:
             result["garagem"] = raw["garagem"]
         return result
 
+    def get_preference_note(self, lead_id: int) -> str | None:
+        """
+        Busca a nota de preferências comportamentais mais recente do lead.
+        Retorna o texto da nota ou None se não houver.
+        Usado pelo Gabriel para personalizar sugestões com base em conversas anteriores.
+        """
+        try:
+            r = requests.get(
+                f"{BASE}/leads/{lead_id}/notes",
+                headers=_hdr(),
+                params={"note_type": "common", "limit": 25, "order[id]": "desc"},
+                timeout=10,
+            )
+            r.raise_for_status()
+            notes = r.json().get("_embedded", {}).get("notes", [])
+            for note in notes:
+                text = (note.get("params") or {}).get("text", "")
+                if "🧠 PREFERÊNCIAS DO CLIENTE" in text:
+                    return text
+        except Exception as e:
+            logger.warning(f"get_preference_note lead {lead_id}: {e}")
+        return None
+
     def get_lead_id_for_contact(self, contact_id: int) -> int | None:
         """Retorna o lead ativo mais recente para um contact_id do Kommo."""
         try:
@@ -718,72 +741,4 @@ class KommoClient:
         2. Cria tarefa para o corretor
         3. (Não move pipeline — Gabriel já está no funil correto)
         """
-        lead = self.find_lead_by_phone(phone)
-        if not lead:
-            logger.warning(f"Gabriel handoff: lead não encontrado para {phone}")
-            return
-
-        lead_id = lead["id"]
-
-        # Nota de qualificação
-        nota = self._build_note_gabriel(history, handoff_reason, funil)
-        try:
-            self._post("leads/notes", [{
-                "entity_id"  : lead_id,
-                "entity_type": "leads",
-                "note_type"  : "common",
-                "params"     : {"text": nota},
-            }])
-        except Exception as e:
-            logger.error(f"Erro ao adicionar nota Gabriel: {e}")
-
-        # Tarefa para corretor
-        urgente = handoff_reason in ("URGENTE", "SOLICITADO")
-        funil_label = {
-            "aluguel"    : "LOCAÇÃO",
-            "avulso"     : "COMPRA",
-            "captacao"   : "CAPTAÇÃO",
-            "lancamentos": "LANÇAMENTO",
-            "investidor" : "INVESTIMENTO",
-        }.get(funil or "", funil or "?")
-
-        texto_tarefa = f"🤖 Gabriel: qualificação de {funil_label} concluída. Lead pronto para o corretor fechar! ✅"
-        if handoff_reason == "URGENTE":
-            texto_tarefa = f"⚡ Gabriel: URGENTE — lead de {funil_label} precisa de atendimento imediato!"
-        elif handoff_reason == "SOLICITADO":
-            texto_tarefa = f"🙋 Gabriel: cliente de {funil_label} solicitou atendimento humano."
-
-        try:
-            self._post("tasks", [{
-                "entity_id"    : lead_id,
-                "entity_type"  : "leads",
-                "task_type_id" : 1,
-                "text"         : texto_tarefa,
-                "complete_till": int(time.time()) + (1800 if urgente else 86400),
-            }])
-        except Exception as e:
-            logger.error(f"Erro ao criar tarefa Gabriel: {e}")
-
-        logger.info(f"Gabriel handoff concluído — lead {lead_id} | funil: {funil} | motivo: {handoff_reason}")
-
-    def _build_note_gabriel(self, history: list[dict], handoff_reason: str, funil: str | None) -> str:
-        funil_label = {
-            "aluguel"    : "🏠 Locação",
-            "avulso"     : "🏡 Compra",
-            "captacao"   : "🔑 Captação",
-            "lancamentos": "🏗️ Lançamento",
-            "investidor" : "📈 Investimento",
-        }.get(funil or "", funil or "?")
-
-        linhas = [
-            f"🤖 Gabriel (Qualificador) — Qualificação concluída",
-            f"Funil: {funil_label}",
-            f"Handoff: {handoff_reason}",
-            "",
-            "─── Conversa Gabriel × Cliente ───",
-        ]
-        for msg in history[-40:]:
-            role = "👤 Cliente" if msg["role"] == "user" else "🤖 Gabriel"
-            linhas.append(f"{role}: {msg['content']}")
-        return "\n".join(linhas)[:3500]
-
+        lead = self.find_lead

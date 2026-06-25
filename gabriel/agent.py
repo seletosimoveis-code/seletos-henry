@@ -198,6 +198,22 @@ class GabrielManager:
             _gabriel_conversations[phone] = history[-MAX_HISTORY:]
         logger.info(f"[{phone}] Mensagem humana registrada no histórico Gabriel ({len(text)} chars)")
 
+    def reactivate(self, phone: str, funil: str) -> None:
+        """
+        Reativa Gabriel para lead que retorna após conversa anterior encerrada
+        (ex: restart do Railway, cliente inativo por semanas/meses).
+
+        Diferente de activate():
+        - NÃO gera mensagem proativa (o cliente já mandou mensagem)
+        - NÃO chama a API do Claude aqui — o chat() processa a mensagem do cliente
+        - O contexto do CRM (já carregado) supre o histórico perdido
+        """
+        _gabriel_mode.add(phone)
+        _gabriel_funil[phone]         = funil
+        _gabriel_conversations[phone] = []   # histórico limpo — CRM supre o contexto
+        _gabriel_turn_count[phone]    = 0
+        logger.info(f"[{phone}] Gabriel reativado para lead retornando — funil: {funil}")
+
     def reset(self, phone: str):
         _gabriel_mode.discard(phone)
         _human_mode.discard(phone)
@@ -265,5 +281,24 @@ class GabrielManager:
             lines.append(f"\n🚫 DADOS JÁ COLETADOS PELO HENRY — NÃO PERGUNTE NOVAMENTE: {', '.join(coletados)}.")
             lines.append("Use esses dados diretamente para personalizar o atendimento.")
             lines.append("É PROIBIDO repetir qualquer pergunta sobre esses itens — o cliente já respondeu ao Henry.")
+
+        # Cliente retornando após período de inatividade
+        if ctx.get("is_returning"):
+            lines.append("")
+            lines.append("🔄 CLIENTE RETORNANDO — já atendido anteriormente pela Seletos.")
+            lines.append("   NÃO se apresente como se fosse o primeiro contato.")
+            lines.append("   Reconheça que você lembra do perfil e pergunte como pode ajudar.")
+            lines.append("   Exemplo: 'Olá [nome]! Que bom ter você de volta 😊 No que posso te ajudar hoje?'")
+            lines.append("   Use os dados do CRM acima para demonstrar que lembra do perfil.")
+
+        # Preferências comportamentais (aprendizado tipo Leo AiRM)
+        prefs = ctx.get("preference_history")
+        if prefs:
+            lines.append("")
+            lines.append("─── Histórico de Preferências (conversa anterior) ───")
+            lines.append(prefs)
+            lines.append("⚠️ Use este histórico para personalizar sugestões.")
+            lines.append("   NÃO sugira características que estão na lista de REJEITADO/NÃO QUER.")
+            lines.append("   Priorize características que estão na lista de GOSTOU/PREFERE.")
 
         return "\n".join(lines)

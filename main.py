@@ -23,6 +23,7 @@ from kommo import (
     get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
 )
 from config import RATE_LIMIT_MAX_PER_MIN, HENRY_MAX_LEAD_AGE_HOURS
+from crm_enricher import enrich_lead_crm
 
 logging.basicConfig(
     level=logging.INFO,
@@ -194,6 +195,66 @@ async def _process_message_inner(
             return
 
         lead_ctx = await asyncio.to_thread(kommo.get_lead_context, phone)
+
+        # ── Lead retornando — Gabriel reativação automática ───────────────────
+        # Condições para detectar retorno (todas devem ser verdadeiras):
+        #   1. Gabriel não está ativo para este número
+        #   2. Henry não está em modo humano
+        #   3. Henry NÃO tem histórico ativo (se tivesse, ainda estaria conversando)
+        #   4. O lead já está em funil de cliente — não está na Recepção
+        #
+        # Guard #3 evita falso-positivo com leads do Canal Pro que chegam pré-movidos
+        # para Aluguel/Avulso mas ainda estão sendo atendidos pelo Henry.
+        if (
+            not gabriel.is_active(phone)
+            and not henry.is_human_mode(phone)
+            and not henry.get_history(phone)
+        ):
+            pipe_id_ret   = lead_ctx.get("pipe_id")
+            funil_retorno = PIPE_TO_FUNIL.get(pipe_id_ret) if pipe_id_ret else None
+            if funil_retorno:
+                logger.info(
+                    f"[{phone}] Lead retornando detectado — "
+                    f"pipe {pipe_id_ret} ({funil_retorno}) — Gabriel reativado"
+                )
+                # Carrega preferências de conversas anteriores (aprendizado comportamental)
+                lead_id_ret = lead_ctx.get("id")
+                if lead_id_ret:
+                    pref_note_ret = await asyncio.to_thread(
+                        kommo.get_preference_note, lead_id_ret
+                    )
+                    if pref_note_ret:
+                        lead_ctx["preference_history"] = pref_note_ret
+                        logger.info(f"[{phone}] Preferências anteriores carregadas para lead retornando")
+
+                lead_ctx["is_returning"] = True
+                henry.set_human_mode(phone)         # bloqueia Henry de processar
+                gabriel.reactivate(phone, funil_retorno)
+
+                await asyncio.to_thread(zapi.send_typing, phone, 1500)
+                await asyncio.sleep(1.5)
+
+                response_ret, handoff_ret = await asyncio.to_thread(
+                    gabriel.chat, phone, text, name, lead_ctx
+                )
+                await asyncio.to_thread(zapi.send_text, phone, response_ret)
+                logger.info(
+                    f"[{phone}] Gabriel respondeu ao lead retornando "
+                    f"({len(response_ret)} chars)"
+                )
+
+                if handoff_ret:
+                    history_ret = gabriel.get_history(phone)
+                    funil_ret   = gabriel.get_funil(phone)
+                    await asyncio.to_thread(
+                        kommo.update_lead_after_gabriel, phone, history_ret, handoff_ret, funil_ret
+                    )
+                    gabriel.set_human_mode(phone)
+                    asyncio.create_task(asyncio.to_thread(
+                        enrich_lead_crm, phone, lead_id_ret, [], history_ret
+                    ))
+                return
+
         await asyncio.to_thread(zapi.send_typing, phone, 1500)
         await asyncio.sleep(1.5)
 
@@ -211,6 +272,15 @@ async def _process_message_inner(
                     kommo.update_lead_after_gabriel, phone, history, handoff, funil
                 )
                 gabriel.set_human_mode(phone)
+
+                # Enriquecimento silencioso do CRM (Leo AiRM)
+                # Roda com o histórico COMPLETO (Henry + Gabriel) para máxima extração
+                lead_id_gab  = lead_ctx.get("id")
+                henry_hist   = henry.get_history(phone)
+                gabriel_hist = history
+                asyncio.create_task(asyncio.to_thread(
+                    enrich_lead_crm, phone, lead_id_gab, henry_hist, gabriel_hist
+                ))
             return
 
         response, handoff = await asyncio.to_thread(
@@ -245,6 +315,16 @@ async def _process_message_inner(
                 for k, v in extra_ctx.items():
                     if v and not lead_ctx_gab.get(k):
                         lead_ctx_gab[k] = v
+
+                # Aprendizado comportamental (Leo AiRM):
+                # busca nota de preferências de conversas anteriores e injeta no contexto Gabriel
+                lead_id_for_prefs = lead_ctx_gab.get("id")
+                if lead_id_for_prefs:
+                    pref_note = await asyncio.to_thread(kommo.get_preference_note, lead_id_for_prefs)
+                    if pref_note:
+                        lead_ctx_gab["preference_history"] = pref_note
+                        logger.info(f"[{phone}] Preferências comportamentais carregadas para Gabriel")
+
                 first_msg_gab = await asyncio.to_thread(
                     gabriel.activate, phone, funil_gab, name, lead_ctx_gab
                 )
@@ -252,6 +332,14 @@ async def _process_message_inner(
                 await asyncio.sleep(2.5)
                 await asyncio.to_thread(zapi.send_text, phone, first_msg_gab)
                 logger.info(f"[{phone}] Gabriel ativado diretamente — funil: {funil_gab}")
+
+            else:
+                # Handoff não-Gabriel (SUPORTE, CORRETOR, URGENTE, JURIDICO, etc.)
+                # Enriquece o CRM com o que o Henry coletou
+                lead_id_henry = lead_ctx.get("id")
+                asyncio.create_task(asyncio.to_thread(
+                    enrich_lead_crm, phone, lead_id_henry, history, []
+                ))
 
     except Exception as e:
         logger.error(f"[{phone}] Erro: {e}", exc_info=True)
