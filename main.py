@@ -356,12 +356,33 @@ async def record_outgoing_message(phone: str, text: str):
     """
     Registra mensagem enviada pelo atendente humano no histórico do bot ativo.
     Não gera resposta — apenas mantém o contexto para o próximo turno do cliente.
+
+    Lógica de modo humano proativo:
+      Se não havia histórico do bot antes desta mensagem E Gabriel não está ativo,
+      o humano foi o PRIMEIRO a falar (não o bot). Ativa modo humano imediatamente
+      para o bot não interferir quando o cliente responder.
+
+    Por que funciona sem falso-positivo com ecos do próprio bot:
+      Quando Henry/Gabriel respondem, adicionam ao histórico em chat() ANTES de
+      chamar send_text(). Então quando a Z-API ecoa o fromMe de volta, já existe
+      histórico → tinha_historico = True → modo humano NÃO é ativado.
     """
     try:
         if gabriel.is_active(phone) and not gabriel.is_human_mode(phone):
             gabriel.record_outgoing(phone, text)
         elif not henry.is_human_mode(phone):
+            # Verifica ANTES de registrar se o bot já tinha falado com este número
+            tinha_historico = bool(henry.get_history(phone))
             henry.record_outgoing(phone, text)
+
+            # Humano proativo: nenhum histórico de bot + Gabriel inativo
+            # → atendente iniciou a conversa — bot não deve interferir
+            if not tinha_historico and not gabriel.is_active(phone):
+                henry.set_human_mode(phone)
+                logger.info(
+                    f"[{phone}] Humano iniciou conversa proativamente — "
+                    f"modo humano ativado (bot não interferirá)"
+                )
         else:
             logger.info(f"[{phone}] fromMe em modo humano total — ignorado")
     except Exception as e:
