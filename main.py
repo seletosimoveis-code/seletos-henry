@@ -4,11 +4,13 @@ main.py
 Servidor FastAPI da Seletos Imoveis.
 """
 
+import os
 import re
 import time
 import json as json_lib
 import logging
 import asyncio
+from datetime import datetime, timezone, timedelta
 from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -44,6 +46,70 @@ _rate_timestamps: dict[str, list[float]] = {}
 # (Z-API às vezes envia webhooks duplicados; Kommo message[add] pode chegar junto com Z-API)
 _msg_dedup: dict[str, float] = {}   # "phone:hash" → timestamp
 _processing_phones: set[str] = set()  # phones com process_message em andamento
+
+# ─── Pausa por intervenção humana ─────────────────────────────────────────────
+# Quando um atendente envia mensagem pelo WhatsApp, o bot pausa automaticamente.
+# Horário comercial (seg–sex 8h–17h) → 4 horas | Fora do horário → próximo dia útil 8h
+HUMAN_PAUSE_HOURS = float(os.getenv("HUMAN_PAUSE_HOURS", "4"))
+_human_pause_until: dict[str, float] = {}   # phone → timestamp de retomada permitida
+_BR_TZ = timezone(timedelta(hours=-3))
+
+
+def _calc_resume_timestamp(ts: float) -> float:
+    """
+    Calcula quando o bot pode retomar após intervenção humana.
+      Horário comercial (seg–sex 8h–17h) → +HUMAN_PAUSE_HOURS horas
+      Fora do horário / fim de semana    → próximo dia útil às 8h (Brasília)
+    """
+    dt         = datetime.fromtimestamp(ts, tz=_BR_TZ)
+    is_weekday = dt.weekday() < 5        # 0=seg … 4=sex
+    is_business = 8 <= dt.hour < 17
+
+    if is_weekday and is_business:
+        return ts + HUMAN_PAUSE_HOURS * 3600
+
+    # Próximo dia útil às 8h
+    next_day = dt.replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    while next_day.weekday() >= 5:       # pula sábado e domingo
+        next_day += timedelta(days=1)
+    return next_day.timestamp()
+
+
+def _is_human_paused(phone: str) -> bool:
+    """True se o bot ainda deve ficar em silêncio (intervenção humana ativa)."""
+    resume_at = _human_pause_until.get(phone)
+    if not resume_at:
+        return False
+    if time.time() < resume_at:
+        return True
+    # Timer expirou — remove e libera o bot
+    del _human_pause_until[phone]
+    logger.info(f"[{phone}] Pausa humana encerrada — bot liberado para retomar")
+    return False
+
+
+def _is_bot_echo(phone: str, text: str) -> bool:
+    """
+    Verifica se o fromMe é eco da última mensagem enviada pelo próprio bot.
+
+    chat() adiciona a resposta ao histórico ANTES de send_text(), então quando
+    Z-API ecoa o fromMe, a mensagem já está como último turno do assistente.
+    """
+    if not text:
+        return False
+    t = text.strip()
+
+    # Verifica Gabriel (tem prioridade — pode estar ativo com Henry em human mode)
+    g_hist = gabriel.get_history(phone)
+    if g_hist and g_hist[-1]["role"] == "assistant" and g_hist[-1]["content"].strip() == t:
+        return True
+
+    # Verifica Henry
+    h_hist = henry.get_history(phone)
+    if h_hist and h_hist[-1]["role"] == "assistant" and h_hist[-1]["content"].strip() == t:
+        return True
+
+    return False
 
 def _is_duplicate_message(phone: str, text: str) -> bool:
     """True se a mesma mensagem já foi processada nos últimos 30 segundos para este número."""
@@ -192,6 +258,13 @@ async def _process_message_inner(
         # Henry ativo: só bloqueia se Henry estiver em modo humano (e Gabriel não estiver ativo)
         elif henry.is_human_mode(phone):
             logger.info(f"[{phone}] Henry em modo humano — ignorando")
+            return
+
+        # Pausa por intervenção humana (timer auto-expirável)
+        # Acionada quando atendente enviou mensagem — bot fica em silêncio até a hora calculada.
+        # Expira automaticamente: 4h em horário comercial | próximo dia útil 8h fora do horário.
+        if _is_human_paused(phone):
+            logger.info(f"[{phone}] Pausa ativa (intervenção humana) — bot em silêncio")
             return
 
         lead_ctx = await asyncio.to_thread(kommo.get_lead_context, phone)
@@ -354,37 +427,37 @@ async def _process_message_inner(
 
 async def record_outgoing_message(phone: str, text: str):
     """
-    Registra mensagem enviada pelo atendente humano no histórico do bot ativo.
-    Não gera resposta — apenas mantém o contexto para o próximo turno do cliente.
+    Registra mensagem enviada pelo atendente humano e ativa a pausa automática do bot.
 
-    Lógica de modo humano proativo:
-      Se não havia histórico do bot antes desta mensagem E Gabriel não está ativo,
-      o humano foi o PRIMEIRO a falar (não o bot). Ativa modo humano imediatamente
-      para o bot não interferir quando o cliente responder.
+    Se o texto for eco do próprio bot (chat() adiciona ao histórico ANTES de send_text(),
+    então o fromMe ecoa algo que já está como último turno do assistente), ignora
+    silenciosamente — nenhuma pausa é acionada.
 
-    Por que funciona sem falso-positivo com ecos do próprio bot:
-      Quando Henry/Gabriel respondem, adicionam ao histórico em chat() ANTES de
-      chamar send_text(). Então quando a Z-API ecoa o fromMe de volta, já existe
-      histórico → tinha_historico = True → modo humano NÃO é ativado.
+    Pausa automática:
+      Horário comercial (seg–sex 8h–17h) → HUMAN_PAUSE_HOURS horas (padrão: 4h)
+      Fora do horário / fim de semana    → próximo dia útil às 8h Brasília
     """
     try:
+        # Eco do próprio bot → ignora sem pausar nem registrar
+        if _is_bot_echo(phone, text):
+            logger.debug(f"[{phone}] fromMe é eco do bot — ignorado sem pausar")
+            return
+
+        # Registra no histórico do bot ativo para preservar contexto da conversa
         if gabriel.is_active(phone) and not gabriel.is_human_mode(phone):
             gabriel.record_outgoing(phone, text)
         elif not henry.is_human_mode(phone):
-            # Verifica ANTES de registrar se o bot já tinha falado com este número
-            tinha_historico = bool(henry.get_history(phone))
             henry.record_outgoing(phone, text)
 
-            # Humano proativo: nenhum histórico de bot + Gabriel inativo
-            # → atendente iniciou a conversa — bot não deve interferir
-            if not tinha_historico and not gabriel.is_active(phone):
-                henry.set_human_mode(phone)
-                logger.info(
-                    f"[{phone}] Humano iniciou conversa proativamente — "
-                    f"modo humano ativado (bot não interferirá)"
-                )
-        else:
-            logger.info(f"[{phone}] fromMe em modo humano total — ignorado")
+        # Ativa a pausa automática com auto-expiração
+        resume_ts = _calc_resume_timestamp(time.time())
+        _human_pause_until[phone] = resume_ts
+        resume_dt = datetime.fromtimestamp(resume_ts, tz=_BR_TZ)
+        logger.info(
+            f"[{phone}] Intervenção humana detectada — bot pausado até "
+            f"{resume_dt.strftime('%d/%m %H:%M')} (Brasília)"
+        )
+
     except Exception as e:
         logger.error(f"[{phone}] Erro ao registrar fromMe: {e}")
 
@@ -604,11 +677,22 @@ async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
 async def reset_conversation(phone: str):
     henry.reset_conversation(phone)
     gabriel.reset(phone)
-    return {"status": "ok", "message": f"Conversa de {phone} reiniciada"}
+    _human_pause_until.pop(phone, None)
+    return {"status": "ok", "message": f"Conversa de {phone} reiniciada (pausa cancelada)"}
 
 
 @app.get("/admin/status/{phone}")
 async def get_status(phone: str):
+    resume_ts  = _human_pause_until.get(phone)
+    pause_info = None
+    if resume_ts:
+        resume_dt  = datetime.fromtimestamp(resume_ts, tz=_BR_TZ)
+        mins_left  = max(0, int((resume_ts - time.time()) / 60))
+        pause_info = {
+            "active"      : time.time() < resume_ts,
+            "resume_at"   : resume_dt.strftime("%d/%m/%Y %H:%M") + " (Brasília)",
+            "mins_left"   : mins_left,
+        }
     return {
         "phone"          : phone,
         "henry_mode"     : henry.is_human_mode(phone),
@@ -617,6 +701,7 @@ async def get_status(phone: str):
         "gabriel_human"  : gabriel.is_human_mode(phone),
         "henry_history"  : len(henry.get_history(phone)),
         "gabriel_history": len(gabriel.get_history(phone)),
+        "human_pause"    : pause_info,
     }
 
 
