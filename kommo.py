@@ -4,8 +4,7 @@ kommo.py
 Cliente Kommo para busca de leads por telefone, atualização de campos
 e registro de notas/tarefas após handoff do Henry (bot).
 
-IMPORTANTE: Os IDs dos campos novos serão preenchidos após rodar:
-    python kommo_setup_campos.py
+IDs verificados em 2026-06-26 via listar_campos.py.
 """
 
 import re
@@ -31,45 +30,91 @@ def _norm_phone(raw: str) -> str:
 
 
 # ─── IDs dos campos customizados ──────────────────────────────────────────────
-# Campos existentes
-F_CANAL_ORIGEM  = 1328586   # select
-F_URGENCIA      = 1328582   # select
-F_DORMITORIOS   = 1328592   # select
-F_BAIRRO        = 1328594   # text
-F_MOTIVO_BUSCA  = 1307202   # text
-F_IMOVEL_ORIG   = 1312438   # text
-
-# Campos novos — criados por kommo_setup_campos.py em 2026-06-23
-F_ORCAMENTO         = 1328828   # text   — Orçamento
-F_FORMA_PAGAMENTO   = 1328606   # select — Forma de Pagamento
-F_PRE_APROVACAO     = 1328836   # select — Pré-aprovação
-F_MOTIVACAO         = 1328830   # text   — Motivação
-F_SITUACAO_ATUAL    = 1328838   # select — Situação Atual
-F_DATA_ENTRADA      = 1328832   # text   — Data de Entrada
-F_NUM_PESSOAS       = 1328834   # text   — Número de Pessoas
+# Campos select
+F_CANAL_ORIGEM      = 1328586   # select — Canal de Origem
+F_URGENCIA          = 1328582   # select — Urgência
+F_DORMITORIOS       = 1328592   # select — N. de Dormitórios
+F_IMOVEL_ATUAL      = 1328838   # select — Imóvel Atual
 F_FINALIDADE        = 1328636   # select — Finalidade
 F_IMOVEL_VENDER     = 1328840   # select — Tem Imóvel para Vender
+F_PRE_APROVADO      = 1328596   # select — Pré-aprovado
 F_SCORE             = 1328842   # select — Score de Qualificação
+F_TIPO_IMOVEL_SEL   = 1328612   # select — Tipo de Imóvel (select)
+F_FORMA_PAGAMENTO   = 1328606   # select — Forma de Pagamento
 
-# Tenta carregar IDs do arquivo gerado pelo setup
-import os, json as _json
-_ids_file = os.path.join(os.path.dirname(__file__), "..", "kommo_campos_ids.json")
-if os.path.exists(_ids_file):
-    try:
-        _ids = _json.load(open(_ids_file, encoding="utf-8"))
-        F_ORCAMENTO       = _ids.get("Orçamento")
-        F_FORMA_PAGAMENTO = _ids.get("Forma de Pagamento")
-        F_PRE_APROVACAO   = _ids.get("Pré-aprovação")
-        F_MOTIVACAO       = _ids.get("Motivação")
-        F_SITUACAO_ATUAL  = _ids.get("Situação Atual")
-        F_DATA_ENTRADA    = _ids.get("Data de Entrada")
-        F_NUM_PESSOAS     = _ids.get("Número de Pessoas")
-        F_FINALIDADE      = _ids.get("Finalidade")
-        F_IMOVEL_VENDER   = _ids.get("Tem Imóvel para Vender")
-        F_SCORE           = _ids.get("Score de Qualificação")
-        logger.info("IDs dos campos carregados de kommo_campos_ids.json")
-    except Exception as e:
-        logger.warning(f"Não foi possível carregar kommo_campos_ids.json: {e}")
+# Campos text
+F_BAIRRO             = 1312436   # text — Bairros Preferência  ← CORRIGIDO (era 1328594)
+F_MOTIVO_BUSCA       = 1307202   # text — Motivo da Busca
+F_IMOVEL_ORIG        = 1312438   # text — Imóvel de Origem
+F_TIPO_IMOVEL        = 1312432   # text — Tipo de Imóvel (texto livre)
+F_IMOVEIS_POTENCIAIS = 1328598   # text — Imóveis Potenciais
+
+# ─── Enum IDs ─────────────────────────────────────────────────────────────────
+# Canal de Origem
+CANAL_ENUM = {
+    "canal_pro"    : 1110898,
+    "whatsapp"     : 1110900,
+    "indicacao"    : 1110902,
+    "site"         : 1110904,
+    "redes_sociais": 1110906,
+    "evento"       : 1110908,
+    "outro"        : 1110910,
+}
+
+# N. de Dormitórios
+DORM_ENUM = {
+    0: 1110912,   # Kitnet/Studio
+    1: 1110914,
+    2: 1110916,
+    3: 1110918,
+    4: 1110920,   # 4+
+}
+
+# Pré-aprovado
+PRE_APROVADO_ENUM = {
+    "sim"        : 1110922,
+    "em_processo": 1110924,
+    "nao"        : 1110926,
+}
+
+# Urgência
+URGENCIA_ENUM = {
+    "imediato"   : 1110872,
+    "curto_prazo": 1110874,
+    "medio_prazo": 1110876,
+    "sem_pressa" : 1110878,
+}
+
+# Imóvel Atual
+IMOVEL_ATUAL_ENUM = {
+    "alugado": 1111542,
+    "proprio": 1111544,
+    "familia": 1111546,
+    "outro"  : 1111548,
+}
+
+# Tem Imóvel para Vender
+IMOVEL_VENDER_ENUM = {
+    "sim_vendido"    : 1111550,
+    "sim_nao_vendido": 1111552,
+    "nao"            : 1111554,
+}
+
+# Score de Qualificação
+SCORE_ENUM = {
+    "quente": 1111556,
+    "morno" : 1111558,
+    "frio"  : 1111560,
+}
+
+# Tipo de Imóvel (select)
+TIPO_IMOVEL_SEL_ENUM = {
+    "apartamento"   : 1110966,
+    "casa"          : 1110968,
+    "terreno"       : 1110970,
+    "comercial"     : 1110972,
+    "empreendimento": 1110974,
+}
 
 # ─── Pipelines e status ───────────────────────────────────────────────────────
 PIPE_RECEPCAO     = 9959303
@@ -167,7 +212,7 @@ def get_entry_status(pipe_id: int | None) -> int | None:
         logger.error(f"Erro ao buscar status de entrada do pipeline {pipe_id}: {e}")
         return None
 
-DORM_ENUM = {1: 1110914, 2: 1110916, 3: 1110918, 4: 1110920}
+# (DORM_ENUM definido acima junto com os demais enums)
 
 BAIRROS = [
     "Ponta Negra", "Capim Macio", "Lagoa Nova", "Petrópolis", "Tirol",
@@ -269,16 +314,17 @@ class KommoClient:
         ctx["pipe_id"]  = lead.get("pipeline_id")
 
         field_map = {
-            F_BAIRRO      : "bairro",
-            F_MOTIVO_BUSCA: "motivo_busca",
-            F_DORMITORIOS : "dormitorios",
-            F_URGENCIA    : "urgencia",
-            F_ORCAMENTO   : "orcamento",
-            F_MOTIVACAO   : "motivacao",
-            F_SITUACAO_ATUAL: "situacao_atual",
-            F_FINALIDADE  : "finalidade",
-            F_DATA_ENTRADA: "data_entrada",
-            F_NUM_PESSOAS : "num_pessoas",
+            F_BAIRRO            : "bairro",
+            F_MOTIVO_BUSCA      : "motivo_busca",
+            F_DORMITORIOS       : "dormitorios",
+            F_URGENCIA          : "urgencia",
+            F_IMOVEL_ATUAL      : "imovel_atual",
+            F_FINALIDADE        : "finalidade",
+            F_TIPO_IMOVEL       : "tipo_imovel",
+            F_IMOVEIS_POTENCIAIS: "imoveis_potenciais",
+            F_PRE_APROVADO      : "pre_aprovado",
+            F_IMOVEL_VENDER     : "imovel_vender",
+            F_SCORE             : "score",
         }
 
         for cf in (lead.get("custom_fields_values") or []):
@@ -361,10 +407,6 @@ class KommoClient:
                 self._patch_field(lead_id, F_BAIRRO, {"value": dados["bairro"]})
             if dados.get("motivo"):
                 self._patch_field(lead_id, F_MOTIVO_BUSCA, {"value": dados["motivo"]})
-            if dados.get("orcamento"):
-                self._patch_field(lead_id, F_ORCAMENTO, {"value": dados["orcamento"]})
-            if dados.get("data_entrada"):
-                self._patch_field(lead_id, F_DATA_ENTRADA, {"value": dados["data_entrada"]})
 
         # ── Move para o funil correto ──────────────────────────────────────────
         HANDOFF_PIPELINE = {
@@ -556,8 +598,8 @@ class KommoClient:
             "📋 DADOS COLETADOS NA TRIAGEM:",
             f"  Interesse    : {dados.get('motivo', '—')}",
             f"  Bairro       : {dados.get('bairro', '—')}",
-            f"  Orçamento    : {dados.get('orcamento', '—')}",
-            f"  Prazo        : {dados.get('data_entrada', '—')}",
+            f"  Tipo imóvel  : {dados.get('tipo_imovel', '—')}",
+            f"  Dormitórios  : {dados.get('dormitorios', '—')}",
             "",
             "ℹ️  Qualificação profunda será feita pelo Gabriel no funil de destino.",
             "",
@@ -586,16 +628,17 @@ class KommoClient:
         ctx["created_at"] = lead.get("created_at", 0)   # timestamp Unix — usado para guard de reativação
 
         field_map = {
-            F_BAIRRO        : "bairro",
-            F_MOTIVO_BUSCA  : "motivo_busca",
-            F_DORMITORIOS   : "dormitorios",
-            F_URGENCIA      : "urgencia",
-            F_ORCAMENTO     : "orcamento",
-            F_MOTIVACAO     : "motivacao",
-            F_SITUACAO_ATUAL: "situacao_atual",
-            F_FINALIDADE    : "finalidade",
-            F_DATA_ENTRADA  : "data_entrada",
-            F_NUM_PESSOAS   : "num_pessoas",
+            F_BAIRRO            : "bairro",
+            F_MOTIVO_BUSCA      : "motivo_busca",
+            F_DORMITORIOS       : "dormitorios",
+            F_URGENCIA          : "urgencia",
+            F_IMOVEL_ATUAL      : "imovel_atual",
+            F_FINALIDADE        : "finalidade",
+            F_TIPO_IMOVEL       : "tipo_imovel",
+            F_IMOVEIS_POTENCIAIS: "imoveis_potenciais",
+            F_PRE_APROVADO      : "pre_aprovado",
+            F_IMOVEL_VENDER     : "imovel_vender",
+            F_SCORE             : "score",
         }
         for cf in (lead.get("custom_fields_values") or []):
             fid  = cf.get("field_id")
@@ -741,4 +784,72 @@ class KommoClient:
         2. Cria tarefa para o corretor
         3. (Não move pipeline — Gabriel já está no funil correto)
         """
-        lead = self.find_lead
+        lead = self.find_lead_by_phone(phone)
+        if not lead:
+            logger.warning(f"Gabriel handoff: lead não encontrado para {phone}")
+            return
+
+        lead_id = lead["id"]
+
+        # Nota de qualificação
+        nota = self._build_note_gabriel(history, handoff_reason, funil)
+        try:
+            self._post("leads/notes", [{
+                "entity_id"  : lead_id,
+                "entity_type": "leads",
+                "note_type"  : "common",
+                "params"     : {"text": nota},
+            }])
+        except Exception as e:
+            logger.error(f"Erro ao adicionar nota Gabriel: {e}")
+
+        # Tarefa para corretor
+        urgente = handoff_reason in ("URGENTE", "SOLICITADO")
+        funil_label = {
+            "aluguel"    : "LOCAÇÃO",
+            "avulso"     : "COMPRA",
+            "captacao"   : "CAPTAÇÃO",
+            "lancamentos": "LANÇAMENTO",
+            "investidor" : "INVESTIMENTO",
+        }.get(funil or "", funil or "?")
+
+        texto_tarefa = f"🤖 Gabriel: qualificação de {funil_label} concluída. Lead pronto para o corretor fechar! ✅"
+        if handoff_reason == "URGENTE":
+            texto_tarefa = f"⚡ Gabriel: URGENTE — lead de {funil_label} precisa de atendimento imediato!"
+        elif handoff_reason == "SOLICITADO":
+            texto_tarefa = f"🙋 Gabriel: cliente de {funil_label} solicitou atendimento humano."
+
+        try:
+            self._post("tasks", [{
+                "entity_id"    : lead_id,
+                "entity_type"  : "leads",
+                "task_type_id" : 1,
+                "text"         : texto_tarefa,
+                "complete_till": int(time.time()) + (1800 if urgente else 86400),
+            }])
+        except Exception as e:
+            logger.error(f"Erro ao criar tarefa Gabriel: {e}")
+
+        logger.info(f"Gabriel handoff concluído — lead {lead_id} | funil: {funil} | motivo: {handoff_reason}")
+
+    def _build_note_gabriel(self, history: list[dict], handoff_reason: str, funil: str | None) -> str:
+        funil_label = {
+            "aluguel"    : "🏠 Locação",
+            "avulso"     : "🏡 Compra",
+            "captacao"   : "🔑 Captação",
+            "lancamentos": "🏗️ Lançamento",
+            "investidor" : "📈 Investimento",
+        }.get(funil or "", funil or "?")
+
+        linhas = [
+            f"🤖 Gabriel (Qualificador) — Qualificação concluída",
+            f"Funil: {funil_label}",
+            f"Handoff: {handoff_reason}",
+            "",
+            "─── Conversa Gabriel × Cliente ───",
+        ]
+        for msg in history[-40:]:
+            role = "👤 Cliente" if msg["role"] == "user" else "🤖 Gabriel"
+            linhas.append(f"{role}: {msg['content']}")
+        return "\n".join(linhas)[:3500]
+
