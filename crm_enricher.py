@@ -26,8 +26,9 @@ from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, KOMMO_SUBDOMAIN, KOMMO_TOKEN
 from kommo import (
-    F_BAIRRO, F_DORMITORIOS, F_ORCAMENTO, F_MOTIVACAO, F_DATA_ENTRADA,
-    F_NUM_PESSOAS, F_MOTIVO_BUSCA, DORM_ENUM,
+    F_BAIRRO, F_DORMITORIOS, F_TIPO_IMOVEL, F_URGENCIA,
+    F_FORMA_PAGAMENTO, F_IMOVEIS_POTENCIAIS,
+    DORM_ENUM, URGENCIA_ENUM,
 )
 
 logger  = logging.getLogger(__name__)
@@ -61,12 +62,8 @@ Retorne exatamente este JSON preenchido:
 {{
   "tipo_imovel": null,
   "dormitorios": null,
-  "garagem": null,
-  "orcamento": null,
   "bairro": null,
-  "data_entrada": null,
-  "motivacao": null,
-  "num_pessoas": null,
+  "urgencia": null,
   "forma_pagamento": null,
   "preferencias_pos": [],
   "preferencias_neg": []
@@ -74,23 +71,24 @@ Retorne exatamente este JSON preenchido:
 
 Guia de preenchimento:
 - tipo_imovel: "casa" | "apartamento" | "studio" | "kitnet" | "loft" | "sobrado" (null se não mencionou)
-- dormitorios: número como string "1", "2", "3", "4" (se cliente disse "2 ou 3", use "2")
-- garagem: "Sim" SOMENTE se cliente disse EXPLICITAMENTE que precisa de garagem ou vaga
-- orcamento: formatar como "R$ 1.500,00"; se faixa → "R$ 1.500,00 - R$ 2.000,00"
-  Exemplos: "1500" → "R$ 1.500,00" | "2 mil" → "R$ 2.000,00" | "até 2k" → "R$ 2.000,00"
+- dormitorios: número inteiro como string "0" (kitnet/studio), "1", "2", "3", "4" (4+ quartos)
+  Se cliente disse "2 ou 3", use "2". Kitnet/studio/loft sem quartos → "0"
 - bairro: nome exato do bairro mencionado pelo cliente (não pelo bot)
-- data_entrada: quando precisa do imóvel — "julho", "próximo mês", "imediato", "15/08"
-- motivacao: por que está buscando imóvel — "vai se casar", "mudança de emprego", "nasceu filho"
-- num_pessoas: número de pessoas que vão morar, como string "2", "4"
+- urgencia: prazo para entrada — escolha UMA opção ou null:
+  "imediato" = precisa agora / dentro de 30 dias / urgente
+  "curto_prazo" = 1 a 3 meses
+  "medio_prazo" = 3 a 6 meses
+  "sem_pressa" = sem prazo definido / mais de 6 meses
 - forma_pagamento: "Financiamento" | "À vista" | "FGTS" | "Misto" (null se não mencionou)
-- preferencias_pos: lista de características que o cliente DEMONSTROU GOSTAR
-  Exemplos: ["piscina", "bairro Ponta Negra", "andar alto", "2 vagas de garagem"]
+- preferencias_pos: lista de características que o cliente DEMONSTROU GOSTAR ou EXIGIU
+  Exemplos: ["piscina", "andar alto", "2 vagas de garagem", "área de lazer", "varanda"]
+  Inclua garagem/vaga AQUI se o cliente mencionou como requisito
 - preferencias_neg: lista de características que o cliente REJEITOU ou NÃO QUER
-  Exemplos: ["térreo", "sem elevador", "bairro Alecrim (muito longe)"]
+  Exemplos: ["térreo", "sem elevador", "bairro Alecrim (muito longe)", "sem vaga"]
 
 IMPORTANTE: preferencias_pos e preferencias_neg são baseadas EXCLUSIVAMENTE em reações
-explícitas do cliente durante a conversa (ex: "não quero", "muito longe", "gostei de",
-"prefiro não"). Não inclua suposições ou inferências.
+explícitas do cliente (ex: "não quero", "muito longe", "preciso de", "gostei de", "prefiro não").
+Não inclua suposições ou inferências.
 """
 
 
@@ -284,39 +282,43 @@ def enrich_lead_crm(
             "values"  : [{"value": extracted["bairro"]}],
         })
 
-    # Orçamento (text)
-    if extracted.get("orcamento") and F_ORCAMENTO not in filled_ids:
+    # Tipo de Imóvel (text)
+    if extracted.get("tipo_imovel") and F_TIPO_IMOVEL not in filled_ids:
         fields_payload.append({
-            "field_id": F_ORCAMENTO,
-            "values"  : [{"value": extracted["orcamento"]}],
+            "field_id": F_TIPO_IMOVEL,
+            "values"  : [{"value": extracted["tipo_imovel"]}],
         })
 
-    # Motivação (text)
-    if extracted.get("motivacao") and F_MOTIVACAO not in filled_ids:
+    # Forma de Pagamento (select)
+    _PAGAMENTO_MAP = {
+        "financiamento": "Financiamento",
+        "à vista"      : "À vista",
+        "a vista"      : "À vista",
+        "fgts"         : "FGTS",
+        "misto"        : "Misto",
+    }
+    if extracted.get("forma_pagamento") and F_FORMA_PAGAMENTO not in filled_ids:
+        pag = extracted["forma_pagamento"].lower()
+        pag_val = _PAGAMENTO_MAP.get(pag) or extracted["forma_pagamento"]
         fields_payload.append({
-            "field_id": F_MOTIVACAO,
-            "values"  : [{"value": extracted["motivacao"]}],
+            "field_id": F_FORMA_PAGAMENTO,
+            "values"  : [{"value": pag_val}],
         })
 
-    # Data de entrada / prazo (text)
-    if extracted.get("data_entrada") and F_DATA_ENTRADA not in filled_ids:
-        fields_payload.append({
-            "field_id": F_DATA_ENTRADA,
-            "values"  : [{"value": extracted["data_entrada"]}],
-        })
+    # Urgência (select — usa URGENCIA_ENUM)
+    if extracted.get("urgencia") and F_URGENCIA not in filled_ids:
+        eid = URGENCIA_ENUM.get(extracted["urgencia"])
+        if eid:
+            fields_payload.append({
+                "field_id": F_URGENCIA,
+                "values"  : [{"enum_id": eid}],
+            })
 
-    # Número de pessoas (text)
-    if extracted.get("num_pessoas") and F_NUM_PESSOAS not in filled_ids:
-        fields_payload.append({
-            "field_id": F_NUM_PESSOAS,
-            "values"  : [{"value": str(extracted["num_pessoas"])}],
-        })
-
-    # Dormitórios (select — usa DORM_ENUM)
-    if extracted.get("dormitorios") and F_DORMITORIOS not in filled_ids:
+    # Dormitórios (select — usa DORM_ENUM; inclui 0 = kitnet/studio)
+    if extracted.get("dormitorios") is not None and F_DORMITORIOS not in filled_ids:
         try:
             d_raw = str(extracted["dormitorios"]).split("-")[0].strip()
-            d     = max(1, min(int(d_raw), 4))
+            d     = max(0, min(int(d_raw), 4))
             eid   = DORM_ENUM.get(d)
             if eid:
                 fields_payload.append({
