@@ -367,11 +367,11 @@ class KommoClient:
             return False
 
         try:
-            # Não inclui status_id — Kommo atribui o status de entrada automaticamente
-            self._patch("leads", [{
-                "id"         : lead_id,
-                "pipeline_id": pipe_destino,
-            }])
+            entry_status = get_entry_status(pipe_destino)
+            patch_data   = {"id": lead_id, "pipeline_id": pipe_destino}
+            if entry_status:
+                patch_data["status_id"] = entry_status
+            self._patch("leads", [patch_data])
             logger.info(f"Lead {lead_id} auto-movido para pipeline {pipe_destino} (motivo: {motivo_busca})")
             return True
         except Exception as e:
@@ -423,7 +423,12 @@ class KommoClient:
         if pipe_destino:
             logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino} (handoff={handoff_reason})")
             try:
-                resp = self._patch("leads", [{"id": lead_id, "pipeline_id": pipe_destino}])
+                entry_status = get_entry_status(pipe_destino)
+                patch_data   = {"id": lead_id, "pipeline_id": pipe_destino}
+                if entry_status:
+                    patch_data["status_id"] = entry_status
+                    logger.info(f"Lead {lead_id}: status_id destino = {entry_status}")
+                resp = self._patch("leads", [patch_data])
                 lead_movido = True
                 logger.info(f"Lead {lead_id} movido → pipeline {pipe_destino}. Kommo resp: {str(resp)[:120]}")
                 time.sleep(0.2)
