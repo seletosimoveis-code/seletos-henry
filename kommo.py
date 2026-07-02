@@ -192,7 +192,7 @@ def get_entry_status(pipe_id: int | None) -> int | None:
     """Retorna o primeiro status ativo (não 'Incoming leads') de um pipeline."""
     if not pipe_id:
         return None
-    if pipe_id in _pipe_entry_cache:
+    if _pipe_entry_cache.get(pipe_id):          # nunca retorna None cacheado
         return _pipe_entry_cache[pipe_id]
     try:
         r = requests.get(f"{BASE}/leads/pipelines/{pipe_id}", headers=_hdr())
@@ -206,7 +206,10 @@ def get_entry_status(pipe_id: int | None) -> int | None:
             key=lambda x: x.get("sort", 0)
         )
         sid = ativas[0]["id"] if ativas else None
-        _pipe_entry_cache[pipe_id] = sid
+        if sid:
+            _pipe_entry_cache[pipe_id] = sid    # só cacheia se encontrou (nunca cacheia None)
+        else:
+            logger.warning(f"Pipeline {pipe_id}: nenhum status de entrada encontrado — não cacheado")
         return sid
     except Exception as e:
         logger.error(f"Erro ao buscar status de entrada do pipeline {pipe_id}: {e}")
@@ -368,10 +371,16 @@ class KommoClient:
 
         try:
             entry_status = get_entry_status(pipe_destino)
-            patch_data   = {"id": lead_id, "pipeline_id": pipe_destino}
-            if entry_status:
-                patch_data["status_id"] = entry_status
-            self._patch("leads", [patch_data])
+            if not entry_status:
+                # Kommo IGNORA silenciosamente PATCH de pipeline_id sem status_id (200 OK sem mover)
+                logger.error(f"Lead {lead_id}: status de entrada do pipeline {pipe_destino} indisponível — move abortado")
+                return False
+            patch_data = {"id": lead_id, "pipeline_id": pipe_destino, "status_id": entry_status}
+            resp = self._patch("leads", [patch_data])
+            atualizados = resp.get("_embedded", {}).get("leads", [])
+            if not any(l.get("id") == lead_id for l in atualizados):
+                logger.error(f"Lead {lead_id}: Kommo retornou 200 mas NÃO moveu (resp: {str(resp)[:200]})")
+                return False
             logger.info(f"Lead {lead_id} auto-movido para pipeline {pipe_destino} (motivo: {motivo_busca})")
             return True
         except Exception as e:
@@ -424,11 +433,17 @@ class KommoClient:
             logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino} (handoff={handoff_reason})")
             try:
                 entry_status = get_entry_status(pipe_destino)
-                patch_data   = {"id": lead_id, "pipeline_id": pipe_destino}
-                if entry_status:
-                    patch_data["status_id"] = entry_status
-                    logger.info(f"Lead {lead_id}: status_id destino = {entry_status}")
+                if not entry_status:
+                    # Kommo IGNORA silenciosamente PATCH de pipeline_id sem status_id (200 OK sem mover).
+                    # Sem status_id válido, aborta e deixa lead_movido=False → tarefa sai com aviso ⚠️.
+                    raise RuntimeError(f"status de entrada do pipeline {pipe_destino} indisponível")
+                patch_data = {"id": lead_id, "pipeline_id": pipe_destino, "status_id": entry_status}
+                logger.info(f"Lead {lead_id}: status_id destino = {entry_status}")
                 resp = self._patch("leads", [patch_data])
+                # Verificação: Kommo pode retornar 200 e descartar o item — confirma que o lead está na resposta
+                atualizados = resp.get("_embedded", {}).get("leads", [])
+                if not any(l.get("id") == lead_id for l in atualizados):
+                    raise RuntimeError(f"Kommo retornou 200 mas NÃO moveu o lead (resp: {str(resp)[:200]})")
                 lead_movido = True
                 logger.info(f"Lead {lead_id} movido → pipeline {pipe_destino}. Kommo resp: {str(resp)[:120]}")
                 time.sleep(0.2)
