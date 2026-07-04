@@ -42,12 +42,20 @@ F_SCORE             = 1328842   # select — Score de Qualificação
 F_TIPO_IMOVEL_SEL   = 1328612   # select — Tipo de Imóvel (select)
 F_FORMA_PAGAMENTO   = 1328606   # select — Forma de Pagamento
 
+# Campos select (por funil — Fase 1: Aluguel/Compra)
+F_ACEITA_ANIMAIS    = 1328602   # select — Aceita animais (aluguel)
+F_TIPO_GARANTIA     = 1328604   # select — Tipo de Garantia (aluguel)
+
 # Campos text
 F_BAIRRO             = 1312436   # text — Bairros Preferência  ← CORRIGIDO (era 1328594)
 F_MOTIVO_BUSCA       = 1307202   # text — Motivo da Busca
 F_IMOVEL_ORIG        = 1312438   # text — Imóvel de Origem
 F_TIPO_IMOVEL        = 1312432   # text — Tipo de Imóvel (texto livre)
 F_IMOVEIS_POTENCIAIS = 1328598   # text — Imóveis Potenciais
+F_ENTRADA_DISPONIVEL = 1328638   # text — Entrada Disponível (compra/lançamentos)
+
+# Campos data
+F_DATA_ENTRADA       = 1328600   # date — Data de Entrada (aluguel)
 
 # ─── Enum IDs ─────────────────────────────────────────────────────────────────
 # Canal de Origem
@@ -105,6 +113,28 @@ SCORE_ENUM = {
     "quente": 1111556,
     "morno" : 1111558,
     "frio"  : 1111560,
+}
+
+# Aceita animais (aluguel)
+ANIMAIS_ENUM = {
+    "sim": 1110928,
+    "nao": 1110930,
+}
+
+# Tipo de Garantia (aluguel)
+GARANTIA_ENUM = {
+    "fiador"              : 1110932,
+    "seguro_fianca"       : 1110934,
+    "deposito"            : 1110936,   # caução
+    "titulo_capitalizacao": 1110938,
+    "a_definir"           : 1110940,
+}
+
+# Finalidade (compra/lançamentos)
+FINALIDADE_ENUM = {
+    "moradia"     : 1111012,
+    "investimento": 1111014,
+    "a_definir"   : 1111016,
 }
 
 # Tipo de Imóvel (select)
@@ -797,12 +827,14 @@ class KommoClient:
         history: list[dict],
         handoff_reason: str,
         funil: str | None,
+        score: str | None = None,
     ):
         """
         Executado após Gabriel concluir a qualificação:
-        1. Adiciona nota com resumo da qualificação + conversa
-        2. Cria tarefa para o corretor
-        3. (Não move pipeline — Gabriel já está no funil correto)
+        1. Persiste o Score de Qualificação (Quente/Morno/Frio) emitido pelo Gabriel
+        2. Adiciona nota com resumo da qualificação + conversa
+        3. Cria tarefa para o corretor (com score em destaque)
+        4. (Não move pipeline — Gabriel já está no funil correto)
         """
         lead = self.find_lead_by_phone(phone)
         if not lead:
@@ -810,6 +842,23 @@ class KommoClient:
             return
 
         lead_id = lead["id"]
+
+        # ── Score de Qualificação (nunca sobrescreve se já preenchido) ────────
+        if score:
+            score_key = score.strip().lower()
+            eid = SCORE_ENUM.get(score_key)
+            ja_tem_score = any(
+                cf.get("field_id") == F_SCORE and cf.get("values")
+                for cf in (lead.get("custom_fields_values") or [])
+            )
+            if eid and not ja_tem_score:
+                try:
+                    self._patch_field(lead_id, F_SCORE, {"enum_id": eid})
+                    logger.info(f"[{phone}] Score '{score_key}' gravado no lead {lead_id}")
+                except Exception as e:
+                    logger.error(f"[{phone}] Erro ao gravar score no lead {lead_id}: {e}")
+            elif not eid:
+                logger.warning(f"[{phone}] Score inválido do Gabriel: '{score}' — ignorado")
 
         # Nota de qualificação
         nota = self._build_note_gabriel(history, handoff_reason, funil)
@@ -833,11 +882,22 @@ class KommoClient:
             "investidor" : "INVESTIMENTO",
         }.get(funil or "", funil or "?")
 
-        texto_tarefa = f"🤖 Gabriel: qualificação de {funil_label} concluída. Lead pronto para o corretor fechar! ✅"
+        score_label = {"quente": "🔥 QUENTE", "morno": "🌡️ MORNO", "frio": "❄️ FRIO"}.get(
+            (score or "").strip().lower(), ""
+        )
+        score_sufixo = f" Score: {score_label}." if score_label else ""
+
+        texto_tarefa = f"🤖 Gabriel: qualificação de {funil_label} concluída.{score_sufixo} Lead pronto para o corretor fechar! ✅"
         if handoff_reason == "URGENTE":
-            texto_tarefa = f"⚡ Gabriel: URGENTE — lead de {funil_label} precisa de atendimento imediato!"
+            texto_tarefa = f"⚡ Gabriel: URGENTE — lead de {funil_label} precisa de atendimento imediato!{score_sufixo}"
         elif handoff_reason == "SOLICITADO":
-            texto_tarefa = f"🙋 Gabriel: cliente de {funil_label} solicitou atendimento humano."
+            texto_tarefa = f"🙋 Gabriel: cliente de {funil_label} solicitou atendimento humano.{score_sufixo}"
+        elif handoff_reason == "VISITA":
+            texto_tarefa = f"🏠 Gabriel: cliente de {funil_label} QUER VISITAR!{score_sufixo} Ligar o quanto antes para agendar."
+
+        # Lead quente ou pedido de visita → tarefa com prazo curto (30 min)
+        if (score or "").strip().lower() == "quente" or handoff_reason == "VISITA":
+            urgente = True
 
         try:
             self._post("tasks", [{

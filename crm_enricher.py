@@ -28,7 +28,12 @@ from config import ANTHROPIC_API_KEY, KOMMO_SUBDOMAIN, KOMMO_TOKEN
 from kommo import (
     F_BAIRRO, F_DORMITORIOS, F_TIPO_IMOVEL, F_URGENCIA,
     F_FORMA_PAGAMENTO, F_IMOVEIS_POTENCIAIS,
-    DORM_ENUM, URGENCIA_ENUM,
+    F_DATA_ENTRADA, F_ACEITA_ANIMAIS, F_TIPO_GARANTIA,
+    F_PRE_APROVADO, F_IMOVEL_ATUAL, F_FINALIDADE,
+    F_IMOVEL_VENDER, F_ENTRADA_DISPONIVEL, F_SCORE,
+    DORM_ENUM, URGENCIA_ENUM, ANIMAIS_ENUM, GARANTIA_ENUM,
+    PRE_APROVADO_ENUM, IMOVEL_ATUAL_ENUM, FINALIDADE_ENUM,
+    IMOVEL_VENDER_ENUM, SCORE_ENUM,
 )
 
 logger  = logging.getLogger(__name__)
@@ -65,6 +70,16 @@ Retorne exatamente este JSON preenchido:
   "bairro": null,
   "urgencia": null,
   "forma_pagamento": null,
+  "orcamento": null,
+  "data_entrada": null,
+  "aceita_animais": null,
+  "tipo_garantia": null,
+  "pre_aprovado": null,
+  "imovel_atual": null,
+  "finalidade": null,
+  "imovel_vender": null,
+  "entrada_disponivel": null,
+  "score": null,
   "preferencias_pos": [],
   "preferencias_neg": []
 }}
@@ -80,6 +95,25 @@ Guia de preenchimento:
   "medio_prazo" = 3 a 6 meses
   "sem_pressa" = sem prazo definido / mais de 6 meses
 - forma_pagamento: "Financiamento" | "À vista" | "FGTS" | "Misto" (null se não mencionou)
+- orcamento: valor máximo em reais como número inteiro (ex: 2500 para "R$ 2.500",
+  350000 para "350 mil"). Aluguel = valor mensal; compra = valor total. null se não disse.
+- data_entrada: data desejada de entrada/mudança no formato "AAAA-MM-DD".
+  Só preencha se o cliente deu data ou mês concreto (ex: "em setembro" → "AAAA-09-01").
+  "O quanto antes" NÃO é data → null (isso vai em urgencia).
+- aceita_animais: "sim" se o cliente TEM pet, "nao" se disse que não tem. null se não falou.
+- tipo_garantia: "fiador" | "seguro_fianca" | "deposito" (caução) | "titulo_capitalizacao"
+  | "a_definir" — apenas se o cliente indicou qual garantia usaria. null se não falou.
+- pre_aprovado: "sim" | "em_processo" | "nao" — crédito/financiamento pré-aprovado em banco.
+- imovel_atual: situação de moradia atual: "alugado" | "proprio" | "familia" | "outro"
+- finalidade: "moradia" | "investimento" | "a_definir" (para compra/lançamento)
+- imovel_vender: "sim_vendido" (tem e já vendeu) | "sim_nao_vendido" (tem, ainda não vendeu)
+  | "nao" — se o cliente precisa vender imóvel antes de comprar.
+- entrada_disponivel: valor da entrada disponível como texto (ex: "R$ 50.000", "60 mil + FGTS")
+- score: classificação do lead com base na conversa TODA:
+  "quente" = urgência imediata + orçamento compatível + sem barreiras (docs ok / pré-aprovado)
+  "morno" = interesse real mas prazo flexível, orçamento no limite ou depende de algo
+  "frio" = só pesquisando, sem prazo, orçamento incompatível ou pouco engajamento
+  Na dúvida entre dois níveis, use o mais baixo. null se a conversa não permite avaliar.
 - preferencias_pos: lista de características que o cliente DEMONSTROU GOSTAR ou EXIGIU
   Exemplos: ["piscina", "andar alto", "2 vagas de garagem", "área de lazer", "varanda"]
   Inclua garagem/vaga AQUI se o cliente mencionou como requisito
@@ -96,9 +130,9 @@ Não inclua suposições ou inferências.
 # HELPERS KOMMO
 # =============================================================================
 
-def _fetch_filled_fields(lead_id: int) -> set:
+def _fetch_filled_fields(lead_id: int) -> tuple[set, int]:
     """
-    Retorna set de field_ids que já estão preenchidos no lead.
+    Retorna (set de field_ids já preenchidos, price atual do lead).
     Faz uma única chamada GET para evitar sobrescrever dados existentes.
     """
     try:
@@ -109,8 +143,9 @@ def _fetch_filled_fields(lead_id: int) -> set:
             timeout=10,
         )
         r.raise_for_status()
+        data = r.json()
         filled: set = set()
-        for cf in (r.json().get("custom_fields_values") or []):
+        for cf in (data.get("custom_fields_values") or []):
             fid  = cf.get("field_id")
             vals = cf.get("values", [])
             if not vals or not fid:
@@ -119,10 +154,11 @@ def _fetch_filled_fields(lead_id: int) -> set:
             eid = vals[0].get("enum_id")
             if v or eid:
                 filled.add(fid)
-        return filled
+        price = int(data.get("price") or 0)
+        return filled, price
     except Exception as e:
         logger.error(f"CRM enricher: erro ao buscar campos de lead {lead_id}: {e}")
-        return set()
+        return set(), 0
 
 
 def _patch_lead(lead_id: int, fields_payload: list) -> bool:
@@ -199,7 +235,7 @@ def _extract_via_llm(transcript: str) -> dict:
         prompt = _EXTRACTION_PROMPT.replace("{transcript}", transcript[:5000])
         resp = _client.messages.create(
             model      = HAIKU_MODEL,
-            max_tokens = 700,
+            max_tokens = 1000,
             messages   = [{"role": "user", "content": prompt}],
         )
         raw = resp.content[0].text.strip()
@@ -259,8 +295,8 @@ def enrich_lead_crm(
         f"({len(transcript)} chars, Henry={len(henry_history)} msgs, Gabriel={len(gabriel_history)} msgs)"
     )
 
-    # 1. Campos já preenchidos (não serão sobrescritos)
-    filled_ids = _fetch_filled_fields(lead_id)
+    # 1. Campos já preenchidos (não serão sobrescritos) + price atual
+    filled_ids, current_price = _fetch_filled_fields(lead_id)
 
     # 2. Extração via LLM
     extracted = _extract_via_llm(transcript)
@@ -328,11 +364,69 @@ def enrich_lead_crm(
         except Exception:
             pass
 
+    # ── Campos select por enum (núcleo + aluguel/compra — Fase 1) ─────────────
+    _ENUM_FIELDS = [
+        ("aceita_animais", F_ACEITA_ANIMAIS, ANIMAIS_ENUM),
+        ("tipo_garantia",  F_TIPO_GARANTIA,  GARANTIA_ENUM),
+        ("pre_aprovado",   F_PRE_APROVADO,   PRE_APROVADO_ENUM),
+        ("imovel_atual",   F_IMOVEL_ATUAL,   IMOVEL_ATUAL_ENUM),
+        ("finalidade",     F_FINALIDADE,     FINALIDADE_ENUM),
+        ("imovel_vender",  F_IMOVEL_VENDER,  IMOVEL_VENDER_ENUM),
+        ("score",          F_SCORE,          SCORE_ENUM),
+    ]
+    for key, fid, enum_map in _ENUM_FIELDS:
+        val = extracted.get(key)
+        if val and fid not in filled_ids:
+            eid = enum_map.get(str(val).strip().lower())
+            if eid:
+                fields_payload.append({"field_id": fid, "values": [{"enum_id": eid}]})
+
+    # Entrada Disponível (text)
+    if extracted.get("entrada_disponivel") and F_ENTRADA_DISPONIVEL not in filled_ids:
+        fields_payload.append({
+            "field_id": F_ENTRADA_DISPONIVEL,
+            "values"  : [{"value": str(extracted["entrada_disponivel"])}],
+        })
+
+    # Data de Entrada (date — Kommo espera unix timestamp)
+    if extracted.get("data_entrada") and F_DATA_ENTRADA not in filled_ids:
+        try:
+            dt = datetime.strptime(str(extracted["data_entrada"]), "%Y-%m-%d").replace(
+                hour=12, tzinfo=_BR_TZ
+            )
+            fields_payload.append({
+                "field_id": F_DATA_ENTRADA,
+                "values"  : [{"value": int(dt.timestamp())}],
+            })
+        except Exception:
+            logger.warning(
+                f"[{phone}] CRM enricher: data_entrada inválida "
+                f"'{extracted.get('data_entrada')}' — ignorada"
+            )
+
     # 4. PATCH único (minimiza chamadas à API)
     if fields_payload:
         _patch_lead(lead_id, fields_payload)
     else:
         logger.info(f"[{phone}] CRM enricher: todos os campos já estavam preenchidos")
+
+    # 4b. Orçamento → campo nativo "Valor da venda" (price) — só se ainda zerado
+    if extracted.get("orcamento") and not current_price:
+        try:
+            price = int(float(extracted["orcamento"]))
+            if 100 <= price <= 50_000_000:   # sanidade: evita lixo do LLM
+                r = requests.patch(
+                    f"{_BASE}/leads/{lead_id}",
+                    headers=_hdr(),
+                    json={"price": price},
+                    timeout=10,
+                )
+                if r.ok:
+                    logger.info(f"[{phone}] CRM enricher: price={price} gravado no lead {lead_id}")
+                else:
+                    logger.warning(f"[{phone}] CRM enricher: PATCH price falhou {r.status_code}")
+        except Exception as e:
+            logger.warning(f"[{phone}] CRM enricher: orcamento inválido '{extracted.get('orcamento')}': {e}")
 
     # 5. Preferências comportamentais → nota no Kommo
     #    Estas notas são lidas pelo Gabriel na próxima conversa (aprendizado comportamental)

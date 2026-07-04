@@ -25,6 +25,7 @@ _DIAS_SEMANA = ["segunda", "terça", "quarta", "quinta", "sexta", "sábado", "do
 logger = logging.getLogger(__name__)
 
 _HANDOFF_RE = re.compile(r"\[HANDOFF:\s*([^\]]+)\]", re.IGNORECASE)
+_SCORE_RE   = re.compile(r"\[SCORE:\s*(quente|morno|frio)\s*\]", re.IGNORECASE)
 
 # Estado em memória: phone → conversa Gabriel
 _gabriel_conversations: dict[str, list[dict]] = {}
@@ -32,6 +33,7 @@ _gabriel_funil:         dict[str, str]         = {}   # phone → funil ativo
 _gabriel_mode:          set[str]               = set()  # phones com Gabriel ativo
 _human_mode:            set[str]               = set()  # phones em modo humano final
 _gabriel_turn_count:    dict[str, int]         = {}   # phone → nº de turnos do cliente
+_gabriel_score:         dict[str, str]         = {}   # phone → score emitido no handoff
 
 _client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -159,7 +161,15 @@ class GabrielManager:
 
         match  = _HANDOFF_RE.search(raw)
         handoff = match.group(1).strip() if match else None
-        clean   = _HANDOFF_RE.sub("", raw).strip()
+
+        # Score de qualificação emitido junto ao handoff: [SCORE: quente|morno|frio]
+        score_match = _SCORE_RE.search(raw)
+        if score_match:
+            _gabriel_score[phone] = score_match.group(1).lower()
+            logger.info(f"[{phone}] Gabriel emitiu score: {_gabriel_score[phone]}")
+
+        clean   = _HANDOFF_RE.sub("", raw)
+        clean   = _SCORE_RE.sub("", clean).strip()
 
         history.append({"role": "assistant", "content": clean})
 
@@ -184,6 +194,10 @@ class GabrielManager:
 
     def get_funil(self, phone: str) -> str | None:
         return _gabriel_funil.get(phone)
+
+    def get_score(self, phone: str) -> str | None:
+        """Score de qualificação emitido pelo Gabriel no handoff ('quente'|'morno'|'frio')."""
+        return _gabriel_score.get(phone)
 
     def get_history(self, phone: str) -> list[dict]:
         return _gabriel_conversations.get(phone, [])
@@ -220,6 +234,7 @@ class GabrielManager:
         _gabriel_conversations.pop(phone, None)
         _gabriel_funil.pop(phone, None)
         _gabriel_turn_count.pop(phone, None)
+        _gabriel_score.pop(phone, None)
         logger.info(f"[{phone}] Gabriel resetado")
 
     # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -259,17 +274,20 @@ class GabrielManager:
 
         coletados = []
         mapping = {
-            "motivo_busca"  : "Interesse",
-            "tipo_imovel"   : "Tipo de imóvel",
-            "dormitorios"   : "Quartos",
-            "garagem"       : "Garagem",
-            "bairro"        : "Bairro",
-            "orcamento"     : "Orçamento",
-            "data_entrada"  : "Prazo",
-            "motivacao"     : "Motivação",
-            "situacao_atual": "Situação atual",
-            "finalidade"    : "Finalidade",
-            "num_pessoas"   : "Nº de pessoas",
+            "motivo_busca"      : "Interesse",
+            "tipo_imovel"       : "Tipo de imóvel",
+            "dormitorios"       : "Quartos",
+            "garagem"           : "Garagem",
+            "bairro"            : "Bairro",
+            "orcamento"         : "Orçamento",
+            "data_entrada"      : "Prazo",
+            "urgencia"          : "Urgência",
+            "imovel_atual"      : "Situação atual",
+            "finalidade"        : "Finalidade",
+            "pre_aprovado"      : "Pré-aprovado",
+            "imovel_vender"     : "Tem imóvel para vender",
+            "score"             : "Score",
+            "imoveis_potenciais": "Imóveis potenciais",
         }
         for key, label in mapping.items():
             val = ctx.get(key)

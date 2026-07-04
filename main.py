@@ -319,8 +319,9 @@ async def _process_message_inner(
                 if handoff_ret:
                     history_ret = gabriel.get_history(phone)
                     funil_ret   = gabriel.get_funil(phone)
+                    score_ret   = gabriel.get_score(phone)
                     await asyncio.to_thread(
-                        kommo.update_lead_after_gabriel, phone, history_ret, handoff_ret, funil_ret
+                        kommo.update_lead_after_gabriel, phone, history_ret, handoff_ret, funil_ret, score_ret
                     )
                     gabriel.set_human_mode(phone)
                     asyncio.create_task(asyncio.to_thread(
@@ -341,8 +342,9 @@ async def _process_message_inner(
                 logger.info(f"[{phone}] Gabriel handoff: {handoff}")
                 history = gabriel.get_history(phone)
                 funil   = gabriel.get_funil(phone)
+                score   = gabriel.get_score(phone)
                 await asyncio.to_thread(
-                    kommo.update_lead_after_gabriel, phone, history, handoff, funil
+                    kommo.update_lead_after_gabriel, phone, history, handoff, funil, score
                 )
                 gabriel.set_human_mode(phone)
 
