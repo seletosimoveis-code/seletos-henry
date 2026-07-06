@@ -80,6 +80,7 @@ Retorne exatamente este JSON preenchido:
   "imovel_vender": null,
   "entrada_disponivel": null,
   "score": null,
+  "imoveis_potenciais": null,
   "preferencias_pos": [],
   "preferencias_neg": []
 }}
@@ -109,6 +110,11 @@ Guia de preenchimento:
 - imovel_vender: "sim_vendido" (tem e já vendeu) | "sim_nao_vendido" (tem, ainda não vendeu)
   | "nao" — se o cliente precisa vender imóvel antes de comprar.
 - entrada_disponivel: valor da entrada disponível como texto (ex: "R$ 50.000", "60 mil + FGTS")
+- imoveis_potenciais: referências (#123) e/ou links de imóveis ESPECÍFICOS que o
+  cliente mencionou, gostou ou quer visitar — separados por " | " se mais de um.
+  Ex: "#029 (galpão Açu) | https://www.seletosimoveis.com/imovel/..."
+  Inclua também descrição curta se o cliente citou imóvel sem ref (ex: "galpão que
+  viu no site em Açu"). null se nenhum imóvel específico foi citado.
 - score: classificação do lead com base na conversa TODA:
   "quente" = urgência imediata + orçamento compatível + sem barreiras (docs ok / pré-aprovado)
   "morno" = interesse real mas prazo flexível, orçamento no limite ou depende de algo
@@ -380,6 +386,13 @@ def enrich_lead_crm(
             eid = enum_map.get(str(val).strip().lower())
             if eid:
                 fields_payload.append({"field_id": fid, "values": [{"enum_id": eid}]})
+
+    # Imóveis Potenciais (textarea — refs/links de imóveis que o cliente citou)
+    if extracted.get("imoveis_potenciais") and F_IMOVEIS_POTENCIAIS not in filled_ids:
+        fields_payload.append({
+            "field_id": F_IMOVEIS_POTENCIAIS,
+            "values"  : [{"value": str(extracted["imoveis_potenciais"])[:1000]}],
+        })
 
     # Entrada Disponível (text)
     if extracted.get("entrada_disponivel") and F_ENTRADA_DISPONIVEL not in filled_ids:

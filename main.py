@@ -20,7 +20,7 @@ from audio import transcribe_audio_url
 from gabriel.agent import GabrielManager, PIPE_TO_FUNIL
 from zapi import ZAPIClient
 from kommo import (
-    KommoClient,
+    KommoClient, canon_phone,
     PIPE_ALUGUEL, PIPE_AVULSO,
     get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
 )
@@ -46,6 +46,18 @@ _rate_timestamps: dict[str, list[float]] = {}
 # (Z-API às vezes envia webhooks duplicados; Kommo message[add] pode chegar junto com Z-API)
 _msg_dedup: dict[str, float] = {}   # "phone:hash" → timestamp
 _processing_phones: set[str] = set()  # phones com process_message em andamento
+
+# ─── Proteção contra tempestade de webhooks ───────────────────────────────────
+# Máximo de ativações proativas (Henry/Gabriel) processadas em paralelo.
+# Sem isso, um evento em massa no Kommo (ex: fechar 248 leads de uma vez)
+# dispara centenas de tasks simultâneas → OOM → crash loop (incidente 05/07/2026).
+_activation_sem = asyncio.Semaphore(5)
+
+
+async def _with_activation_sem(coro):
+    """Executa uma corrotina de ativação respeitando o limite de concorrência."""
+    async with _activation_sem:
+        await coro
 
 # ─── Pausa por intervenção humana ─────────────────────────────────────────────
 # Quando um atendente envia mensagem pelo WhatsApp, o bot pausa automaticamente.
@@ -174,7 +186,8 @@ async def webhook_zapi(request: Request):
     if body.get("type") != "ReceivedCallback":
         return JSONResponse({"status": "ignored", "reason": "not a message"})
 
-    phone = body.get("phone", "").strip()
+    # Chave canônica — MESMO formato usado pelo caminho Kommo (evita conversa duplicada)
+    phone = canon_phone(body.get("phone", "").strip())
     text  = (body.get("text") or {}).get("message", "").strip()
     name  = body.get("senderName", "").strip()
 
@@ -545,7 +558,7 @@ async def _process_kommo_event(raw: bytes, content_type: str):
         # entity_type '2' = lead; também aceitamos string 'lead'
         if contact_id and entity_type in ("2", "lead"):
             logger.info(f"Kommo message[add] — contact_id={contact_id} (canal web/chat)")
-            asyncio.create_task(activate_henry_for_contact(contact_id))
+            asyncio.create_task(_with_activation_sem(activate_henry_for_contact(contact_id)))
 
     # ── Novos leads → Henry proativo ──────────────────────────────────────────
     for event in leads_body.get("add", []):
@@ -555,7 +568,7 @@ async def _process_kommo_event(raw: bytes, content_type: str):
             continue
         if lead_id:
             logger.info(f"Kommo leads[add] — lead_id={lead_id}")
-            asyncio.create_task(activate_henry_for_lead(lead_id))
+            asyncio.create_task(_with_activation_sem(activate_henry_for_lead(lead_id)))
 
     # ── Mudança de status → Gabriel proativo ──────────────────────────────────
     leads_events = leads_body.get("status", [])
@@ -567,15 +580,22 @@ async def _process_kommo_event(raw: bytes, content_type: str):
         try:
             lead_id     = int(event.get("id", 0))
             pipeline_id = int(event.get("pipeline_id", 0))
+            status_id   = int(event.get("status_id", 0) or 0)
         except (TypeError, ValueError):
             continue
         if not lead_id or not pipeline_id:
+            continue
+        # ── Lead FECHADO (ganho=142 / perdido=143) → NUNCA ativar Gabriel ──────
+        # Sem este guard, um fechamento em massa (ex: 248 leads em 05/07/2026)
+        # dispara centenas de ativações simultâneas → OOM → crash loop do serviço.
+        if status_id in (142, 143):
+            logger.info(f"Lead {lead_id} fechado (status {status_id}) — Gabriel nao ativado")
             continue
         funil = PIPE_TO_FUNIL.get(pipeline_id)
         if not funil:
             logger.info(f"Pipeline {pipeline_id} nao e funil Gabriel")
             continue
-        asyncio.create_task(activate_gabriel_for_lead(lead_id, pipeline_id, funil))
+        asyncio.create_task(_with_activation_sem(activate_gabriel_for_lead(lead_id, pipeline_id, funil)))
 
 
 async def activate_henry_for_contact(contact_id: int):

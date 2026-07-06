@@ -29,6 +29,28 @@ def _norm_phone(raw: str) -> str:
     return digits[-11:] if len(digits) >= 10 else digits
 
 
+def canon_phone(raw: str) -> str:
+    """
+    Chave CANÔNICA de telefone BR — usada como chave de estado dos bots e para envio Z-API.
+    Formato: 55 + DDD + número local SEM o 9º dígito extra (12 dígitos).
+
+    Unifica os formatos que chegam pelos dois canais:
+      Z-API : '558496078130' ou '5584996078130'
+      Kommo : '+55 84 96078-130' ou '+55 84 9 9607-8130'
+    Todos viram '558496078130'. Sem isso, cada canal cria uma conversa
+    paralela para a mesma pessoa (bug da dupla saudação de 04/07/2026).
+    """
+    digits = re.sub(r"\D", "", raw or "")
+    if digits.startswith("55") and len(digits) > 11:
+        digits = digits[2:]
+    # DDD + 9 dígitos → remove o nono dígito (celular BR)
+    if len(digits) == 11 and digits[2] == "9":
+        digits = digits[:2] + digits[3:]
+    if 10 <= len(digits) <= 11:
+        return "55" + digits
+    return digits
+
+
 # ─── IDs dos campos customizados ──────────────────────────────────────────────
 # Campos select
 F_CANAL_ORIGEM      = 1328586   # select — Canal de Origem
@@ -544,9 +566,11 @@ class KommoClient:
         if handoff_reason in _MOTIVO_MAP:
             dados["motivo"] = _MOTIVO_MAP[handoff_reason]
 
-        # Tipo de imóvel
+        # Tipo de imóvel (residencial E comercial)
         tipo_m = re.search(
-            r'\b(casa|apartamento|apto|studio|kitnet|loft|sobrado|sala\s+comercial)\b',
+            r'\b(casa|apartamento|apto|studio|kitnet|loft|sobrado|cobertura|flat|'
+            r'galp[ãa]o|dep[óo]sito|sala\s+comercial|loja|ponto\s+comercial|'
+            r'pr[ée]dio\s+comercial|pr[ée]dio|terreno|lote|s[íi]tio|ch[áa]cara)\b',
             texto, re.IGNORECASE
         )
         if tipo_m:
@@ -804,7 +828,7 @@ class KommoClient:
                     if cf.get("field_code") in ("PHONE", "TEL"):
                         vals = cf.get("values", [])
                         if vals:
-                            phone = _norm_phone(str(vals[0].get("value", "")))
+                            phone = canon_phone(str(vals[0].get("value", "")))
                             break
                 if phone:
                     break
