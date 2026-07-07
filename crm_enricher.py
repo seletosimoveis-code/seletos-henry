@@ -65,6 +65,7 @@ CONVERSA:
 
 Retorne exatamente este JSON preenchido:
 {{
+  "interesse": null,
   "tipo_imovel": null,
   "dormitorios": null,
   "bairro": null,
@@ -86,6 +87,8 @@ Retorne exatamente este JSON preenchido:
 }}
 
 Guia de preenchimento:
+- interesse: intenção do cliente na transação: "alugar" | "comprar" | "vender"
+  (proprietário oferecendo imóvel para venda/locação pela imobiliária) | null se incerto
 - tipo_imovel: "casa" | "apartamento" | "studio" | "kitnet" | "loft" | "sobrado" (null se não mencionou)
 - dormitorios: número inteiro como string "0" (kitnet/studio), "1", "2", "3", "4" (4+ quartos)
   Se cliente disse "2 ou 3", use "2". Kitnet/studio/loft sem quartos → "0"
@@ -315,7 +318,36 @@ def enrich_lead_crm(
     )
 
     # 3. Monta payload PATCH com apenas os campos vazios
-    fields_payload = []
+    fields_payload = build_fields_payload(extracted, filled_ids)
+
+    # 4. PATCH único (minimiza chamadas à API)
+    if fields_payload:
+        _patch_lead(lead_id, fields_payload)
+    else:
+        logger.info(f"[{phone}] CRM enricher: todos os campos já estavam preenchidos")
+
+    # 4b. Orçamento → campo nativo "Valor da venda" (price)
+    maybe_set_price(lead_id, extracted, current_price, phone)
+
+    # 5. Preferências comportamentais → nota no Kommo
+    apply_preferences_note(phone, lead_id, extracted)
+
+    logger.info(f"[{phone}] CRM enricher concluído — lead {lead_id}")
+
+
+# Valores de price abaixo disso são lixo (código/custo do lead vindo do Canal Pro,
+# ex: R$ 119–293) — tratados como campo vazio em todo o sistema.
+JUNK_PRICE_MAX = 500
+
+
+def build_fields_payload(extracted: dict, filled_ids: set,
+                         include_data_entrada: bool = True) -> list:
+    """
+    Monta o payload de custom fields a partir da extração do LLM,
+    preenchendo APENAS campos vazios. Compartilhado entre o enricher
+    (pós-handoff) e o retroativo (revisão silenciosa).
+    """
+    fields_payload: list = []
 
     # Bairro (text)
     if extracted.get("bairro") and F_BAIRRO not in filled_ids:
@@ -402,7 +434,8 @@ def enrich_lead_crm(
         })
 
     # Data de Entrada (date — Kommo espera unix timestamp)
-    if extracted.get("data_entrada") and F_DATA_ENTRADA not in filled_ids:
+    # include_data_entrada=False no retroativo: datas de conversas antigas já passaram
+    if include_data_entrada and extracted.get("data_entrada") and F_DATA_ENTRADA not in filled_ids:
         try:
             dt = datetime.strptime(str(extracted["data_entrada"]), "%Y-%m-%d").replace(
                 hour=12, tzinfo=_BR_TZ
@@ -417,32 +450,37 @@ def enrich_lead_crm(
                 f"'{extracted.get('data_entrada')}' — ignorada"
             )
 
-    # 4. PATCH único (minimiza chamadas à API)
-    if fields_payload:
-        _patch_lead(lead_id, fields_payload)
-    else:
-        logger.info(f"[{phone}] CRM enricher: todos os campos já estavam preenchidos")
+    return fields_payload
 
-    # 4b. Orçamento → campo nativo "Valor da venda" (price) — só se ainda zerado
-    if extracted.get("orcamento") and not current_price:
-        try:
-            price = int(float(extracted["orcamento"]))
-            if 100 <= price <= 50_000_000:   # sanidade: evita lixo do LLM
-                r = requests.patch(
-                    f"{_BASE}/leads/{lead_id}",
-                    headers=_hdr(),
-                    json={"price": price},
-                    timeout=10,
-                )
-                if r.ok:
-                    logger.info(f"[{phone}] CRM enricher: price={price} gravado no lead {lead_id}")
-                else:
-                    logger.warning(f"[{phone}] CRM enricher: PATCH price falhou {r.status_code}")
-        except Exception as e:
-            logger.warning(f"[{phone}] CRM enricher: orcamento inválido '{extracted.get('orcamento')}': {e}")
 
-    # 5. Preferências comportamentais → nota no Kommo
-    #    Estas notas são lidas pelo Gabriel na próxima conversa (aprendizado comportamental)
+def maybe_set_price(lead_id: int, extracted: dict, current_price: int, phone: str = "") -> bool:
+    """
+    Grava o orçamento extraído no campo nativo price ("Valor da venda").
+    Considera VAZIO qualquer price < JUNK_PRICE_MAX — leads do Canal Pro chegam
+    com o código/custo do lead (R$ 119–293) nesse campo, o que não é valor real.
+    """
+    if not extracted.get("orcamento") or current_price >= JUNK_PRICE_MAX:
+        return False
+    try:
+        price = int(float(extracted["orcamento"]))
+        if 100 <= price <= 50_000_000:   # sanidade: evita lixo do LLM
+            r = requests.patch(
+                f"{_BASE}/leads/{lead_id}",
+                headers=_hdr(),
+                json={"price": price},
+                timeout=10,
+            )
+            if r.ok:
+                logger.info(f"[{phone}] CRM enricher: price={price} gravado no lead {lead_id}")
+                return True
+            logger.warning(f"[{phone}] CRM enricher: PATCH price falhou {r.status_code}")
+    except Exception as e:
+        logger.warning(f"[{phone}] CRM enricher: orcamento inválido '{extracted.get('orcamento')}': {e}")
+    return False
+
+
+def apply_preferences_note(phone: str, lead_id: int, extracted: dict) -> None:
+    """Preferências comportamentais → nota no Kommo (lida pelo Gabriel depois)."""
     prefs_pos = [p for p in (extracted.get("preferencias_pos") or []) if p]
     prefs_neg = [n for n in (extracted.get("preferencias_neg") or []) if n]
 
@@ -471,5 +509,3 @@ def enrich_lead_crm(
                 f"[{phone}] CRM enricher: nota de preferências salva "
                 f"(+{len(prefs_pos)} pos, -{len(prefs_neg)} neg)"
             )
-
-    logger.info(f"[{phone}] CRM enricher concluído — lead {lead_id}")

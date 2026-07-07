@@ -139,7 +139,8 @@ def _fetch_demanda_leads() -> list[dict]:
 # ─── Agregação e relatório ────────────────────────────────────────────────────
 
 def _faixa(finalidade: str, price: int) -> str:
-    if not price:
+    # price < 500 = lixo do Canal Pro (código/custo do lead, ex: R$ 119–293)
+    if not price or price < 500:
         return "valor n/i"
     if finalidade == "aluguel":
         if price <= 1500:  return "até R$1.500"

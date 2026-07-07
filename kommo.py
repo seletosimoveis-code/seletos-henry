@@ -828,6 +828,8 @@ class KommoClient:
         # ── Roteia para o funil de Cadência ───────────────────────────────────
         pipe_atual = lead.get("pipeline_id")
         price      = int(lead.get("price") or 0)
+        if price < 500:
+            price = 0   # lixo do Canal Pro (código do lead) → trata como sem orçamento
         destino    = None
         destino_label = ""
         if pipe_atual == PIPE_ALUGUEL:

@@ -29,6 +29,7 @@ from config import RATE_LIMIT_MAX_PER_MIN, HENRY_MAX_LEAD_AGE_HOURS
 from crm_enricher import enrich_lead_crm
 import followup
 import demandas
+import retroativo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,6 +163,8 @@ async def startup():
     followup.start(henry, gabriel, kommo, zapi, _is_human_paused)
     # ── Radar de Demandas (relatório diário/semanal de captação) ───────────────
     demandas.start(zapi)
+    # ── Retroativo (revisão silenciosa sob demanda via /admin/retroativo) ──────
+    retroativo.init(zapi)
 
 
 def _hydrate_state():
@@ -749,6 +752,43 @@ async def admin_demandas(semanal: bool = False):
     """Gera o Radar de Demandas sob demanda (para teste/consulta imediata)."""
     report = await asyncio.to_thread(demandas.build_report, semanal)
     return {"report": report}
+
+
+@app.api_route("/admin/retroativo", methods=["GET", "POST"])
+async def admin_retroativo(dry_run: bool = True, limit: int = 0, escopo: str = "ativos"):
+    """
+    Revisão silenciosa. escopo: 'ativos' (Aluguel+Avulso ativos) |
+    'perdidos' (Venda perdida — inclui os 602 do fechamento em massa) |
+    'recepcao' (classifica e roteia leads parados na Recepção).
+    dry_run=true (padrão) só simula. Acompanhe em /admin/retroativo/status.
+    """
+    if escopo not in ("ativos", "perdidos", "recepcao"):
+        return {"erro": "escopo deve ser: ativos | perdidos | recepcao"}
+    if retroativo.is_running():
+        return {"status": "já em execução", "detalhes": retroativo.status()}
+    asyncio.create_task(asyncio.to_thread(retroativo.run, dry_run, limit, escopo))
+    return {
+        "status" : "iniciado em background",
+        "escopo" : escopo,
+        "modo"   : "SIMULAÇÃO (nada será gravado)" if dry_run else "EXECUÇÃO REAL",
+        "acompanhar": "/admin/retroativo/status",
+    }
+
+
+@app.api_route("/admin/retroativo/migrar", methods=["GET", "POST"])
+async def admin_retroativo_migrar(batch: int = 40, dry_run: bool = True):
+    """
+    Migra leads 'Venda perdida' para os funis de Cadência, em lotes.
+    Rode a revisão silenciosa (escopo=perdidos) ANTES, para a cadência
+    encontrar cadastros completos.
+    """
+    resultado = await asyncio.to_thread(retroativo.migrar_perdidos, batch, dry_run)
+    return resultado
+
+
+@app.get("/admin/retroativo/status")
+async def admin_retroativo_status():
+    return retroativo.status()
 
 
 @app.get("/admin/status/{phone}")
