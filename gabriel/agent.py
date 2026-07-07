@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, GABRIEL_MODEL, MAX_HISTORY, GABRIEL_MAX_TURNS
 from gabriel.prompts import get_prompt
 from site_seletos import fetch_imovel_details, extract_ref_from_text
+import store
 
 # Fuso de Brasília: UTC-3 fixo (Brasil não usa horário de verão desde 2019)
 _BR_TZ = timezone(timedelta(hours=-3))
@@ -27,13 +28,43 @@ logger = logging.getLogger(__name__)
 _HANDOFF_RE = re.compile(r"\[HANDOFF:\s*([^\]]+)\]", re.IGNORECASE)
 _SCORE_RE   = re.compile(r"\[SCORE:\s*(quente|morno|frio)\s*\]", re.IGNORECASE)
 
-# Estado em memória: phone → conversa Gabriel
+# Estado em memória (cache de leitura; SQLite via store.py é o backup durável)
 _gabriel_conversations: dict[str, list[dict]] = {}
 _gabriel_funil:         dict[str, str]         = {}   # phone → funil ativo
 _gabriel_mode:          set[str]               = set()  # phones com Gabriel ativo
 _human_mode:            set[str]               = set()  # phones em modo humano final
 _gabriel_turn_count:    dict[str, int]         = {}   # phone → nº de turnos do cliente
 _gabriel_score:         dict[str, str]         = {}   # phone → score emitido no handoff
+
+
+def hydrate_from_store() -> None:
+    """Reconstrói o estado do Gabriel a partir do SQLite após um restart."""
+    try:
+        convs = store.recent_conversations("gabriel", MAX_HISTORY)
+        _gabriel_conversations.update(convs)
+        for phone, flag in store.all_state("gabriel_mode").items():
+            if flag:
+                _gabriel_mode.add(phone)
+        for phone, flag in store.all_state("gabriel_human").items():
+            if flag:
+                _human_mode.add(phone)
+        for phone, funil in store.all_state("gabriel_funil").items():
+            if funil:
+                _gabriel_funil[phone] = str(funil)
+        for phone, turns in store.all_state("gabriel_turns").items():
+            try:
+                _gabriel_turn_count[phone] = int(turns)
+            except (TypeError, ValueError):
+                continue
+        for phone, score in store.all_state("gabriel_score").items():
+            if score:
+                _gabriel_score[phone] = str(score)
+        logger.info(
+            f"Gabriel reidratado: {len(convs)} conversas, {len(_gabriel_mode)} ativos, "
+            f"{len(_human_mode)} em modo humano"
+        )
+    except Exception as e:
+        logger.error(f"Gabriel hydrate falhou (seguindo sem estado prévio): {e}")
 
 _client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -58,6 +89,10 @@ class GabrielManager:
         _gabriel_mode.add(phone)
         _gabriel_funil[phone] = funil
         _gabriel_conversations[phone] = []   # conversa fresca
+        store.clear_msgs("gabriel", phone)
+        store.set_state(phone, "gabriel_mode", True)
+        store.set_state(phone, "gabriel_funil", funil)
+        store.del_state(phone, "gabriel_human")
 
         logger.info(f"[{phone}] Gabriel ativado — funil: {funil}")
 
@@ -100,6 +135,7 @@ class GabrielManager:
 
         # Salva no histórico como assistente (Gabriel iniciou)
         _gabriel_conversations[phone].append({"role": "assistant", "content": clean})
+        store.append_msg("gabriel", phone, "assistant", clean)
 
         return clean
 
@@ -122,6 +158,7 @@ class GabrielManager:
         # ── Limite de turnos (anti-loop / anti-abuso) ─────────────────────────
         turn = _gabriel_turn_count.get(phone, 0) + 1
         _gabriel_turn_count[phone] = turn
+        store.set_state(phone, "gabriel_turns", turn)
         if turn > GABRIEL_MAX_TURNS:
             logger.warning(f"[{phone}] Gabriel: limite de {GABRIEL_MAX_TURNS} turnos atingido — encerrando")
             self.set_human_mode(phone)
@@ -131,9 +168,11 @@ class GabrielManager:
                 "Até logo! 👋"
             )
             history.append({"role": "assistant", "content": encerramento})
+            store.append_msg("gabriel", phone, "assistant", encerramento)
             return encerramento, "MAX_TURNS"
 
         history.append({"role": "user", "content": user_message})
+        store.append_msg("gabriel", phone, "user", user_message)
 
         system = self._build_system(funil, sender_name, lead_context)
 
@@ -166,12 +205,14 @@ class GabrielManager:
         score_match = _SCORE_RE.search(raw)
         if score_match:
             _gabriel_score[phone] = score_match.group(1).lower()
+            store.set_state(phone, "gabriel_score", _gabriel_score[phone])
             logger.info(f"[{phone}] Gabriel emitiu score: {_gabriel_score[phone]}")
 
         clean   = _HANDOFF_RE.sub("", raw)
         clean   = _SCORE_RE.sub("", clean).strip()
 
         history.append({"role": "assistant", "content": clean})
+        store.append_msg("gabriel", phone, "assistant", clean)
 
         if len(history) > MAX_HISTORY:
             _gabriel_conversations[phone] = history[-MAX_HISTORY:]
@@ -190,6 +231,8 @@ class GabrielManager:
     def set_human_mode(self, phone: str):
         _human_mode.add(phone)
         _gabriel_mode.discard(phone)
+        store.set_state(phone, "gabriel_human", True)
+        store.del_state(phone, "gabriel_mode")
         logger.info(f"[{phone}] Modo humano ativado (Gabriel → corretor)")
 
     def get_funil(self, phone: str) -> str | None:
@@ -208,6 +251,7 @@ class GabrielManager:
         """
         history = _gabriel_conversations.setdefault(phone, [])
         history.append({"role": "assistant", "content": text})
+        store.append_msg("gabriel", phone, "assistant", text)
         if len(history) > MAX_HISTORY:
             _gabriel_conversations[phone] = history[-MAX_HISTORY:]
         logger.info(f"[{phone}] Mensagem humana registrada no histórico Gabriel ({len(text)} chars)")
@@ -226,6 +270,11 @@ class GabrielManager:
         _gabriel_funil[phone]         = funil
         _gabriel_conversations[phone] = []   # histórico limpo — CRM supre o contexto
         _gabriel_turn_count[phone]    = 0
+        store.clear_msgs("gabriel", phone)
+        store.set_state(phone, "gabriel_mode", True)
+        store.set_state(phone, "gabriel_funil", funil)
+        store.set_state(phone, "gabriel_turns", 0)
+        store.del_state(phone, "gabriel_human")
         logger.info(f"[{phone}] Gabriel reativado para lead retornando — funil: {funil}")
 
     def reset(self, phone: str):
@@ -235,6 +284,11 @@ class GabrielManager:
         _gabriel_funil.pop(phone, None)
         _gabriel_turn_count.pop(phone, None)
         _gabriel_score.pop(phone, None)
+        store.clear_msgs("gabriel", phone)
+        store.clear_phone_state(
+            phone,
+            ["gabriel_mode", "gabriel_human", "gabriel_funil", "gabriel_turns", "gabriel_score"],
+        )
         logger.info(f"[{phone}] Gabriel resetado")
 
     # ─── Helpers ──────────────────────────────────────────────────────────────

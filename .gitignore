@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+seletos_state.db
+seletos_state.db-wal
+seletos_state.db-shm

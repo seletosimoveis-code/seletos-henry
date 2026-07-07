@@ -9,15 +9,31 @@ import logging
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 from prompts import SYSTEM_PROMPT
+import store
 
 logger = logging.getLogger(__name__)
 
 # Detecta tag de handoff no texto do Claude
 _HANDOFF_RE = re.compile(r"\[HANDOFF:\s*([^\]]+)\]", re.IGNORECASE)
 
-# Estado em memória (em produção com muitos usuários: substituir por Redis)
+# Estado em memória — cache de leitura; SQLite (store.py) é o backup durável
 _conversations: dict[str, list[dict]] = {}
 _human_mode:    set[str]              = set()
+
+
+def hydrate_from_store() -> None:
+    """Reconstrói o estado do Henry a partir do SQLite após um restart."""
+    try:
+        convs = store.recent_conversations("henry", MAX_HISTORY)
+        _conversations.update(convs)
+        for phone, flag in store.all_state("henry_human").items():
+            if flag:
+                _human_mode.add(phone)
+        logger.info(
+            f"Henry reidratado: {len(convs)} conversas, {len(_human_mode)} em modo humano"
+        )
+    except Exception as e:
+        logger.error(f"Henry hydrate falhou (seguindo sem estado prévio): {e}")
 
 _client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -38,6 +54,7 @@ class AgentManager:
         """
         history = _conversations.setdefault(phone, [])
         history.append({"role": "user", "content": user_message})
+        store.append_msg("henry", phone, "user", user_message)
 
         # Monta system prompt com contexto do CRM
         system = SYSTEM_PROMPT.replace(
@@ -64,6 +81,7 @@ class AgentManager:
 
         # Salva resposta no histórico
         history.append({"role": "assistant", "content": clean_text})
+        store.append_msg("henry", phone, "assistant", clean_text)
 
         # Limita tamanho do histórico
         if len(history) > MAX_HISTORY:
@@ -81,6 +99,7 @@ class AgentManager:
 
     def set_human_mode(self, phone: str):
         _human_mode.add(phone)
+        store.set_state(phone, "henry_human", True)
         logger.info(f"[{phone}] Modo humano ativado")
 
     def activate(self, phone: str, sender_name: str, lead_context: dict) -> str:
@@ -92,6 +111,8 @@ class AgentManager:
         # Garante histórico limpo para este número
         _conversations[phone] = []
         _human_mode.discard(phone)
+        store.clear_msgs("henry", phone)
+        store.del_state(phone, "henry_human")
 
         system = SYSTEM_PROMPT.replace(
             "{lead_context}",
@@ -122,6 +143,7 @@ class AgentManager:
 
         clean = _HANDOFF_RE.sub("", raw).strip()
         _conversations[phone].append({"role": "assistant", "content": clean})
+        store.append_msg("henry", phone, "assistant", clean)
         logger.info(f"[{phone}] Henry ativado proativamente ({len(clean)} chars)")
         return clean
 
@@ -132,6 +154,7 @@ class AgentManager:
         """
         history = _conversations.setdefault(phone, [])
         history.append({"role": "assistant", "content": text})
+        store.append_msg("henry", phone, "assistant", text)
         if len(history) > MAX_HISTORY:
             _conversations[phone] = history[-MAX_HISTORY:]
         logger.info(f"[{phone}] Mensagem humana registrada no histórico Henry ({len(text)} chars)")
@@ -140,6 +163,8 @@ class AgentManager:
         """Reinicia a conversa de um número (ex: novo atendimento)."""
         _conversations.pop(phone, None)
         _human_mode.discard(phone)
+        store.clear_msgs("henry", phone)
+        store.del_state(phone, "henry_human")
         logger.info(f"[{phone}] Conversa reiniciada")
 
     # ─── Helpers ──────────────────────────────────────────────────────────────

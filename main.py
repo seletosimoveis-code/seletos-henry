@@ -15,9 +15,10 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent import AgentManager
+from agent import AgentManager, hydrate_from_store as henry_hydrate
 from audio import transcribe_audio_url
-from gabriel.agent import GabrielManager, PIPE_TO_FUNIL
+from gabriel.agent import GabrielManager, PIPE_TO_FUNIL, hydrate_from_store as gabriel_hydrate
+import store
 from zapi import ZAPIClient
 from kommo import (
     KommoClient, canon_phone,
@@ -96,6 +97,7 @@ def _is_human_paused(phone: str) -> bool:
         return True
     # Timer expirou — remove e libera o bot
     del _human_pause_until[phone]
+    store.del_state(phone, "pause_until")
     logger.info(f"[{phone}] Pausa humana encerrada — bot liberado para retomar")
     return False
 
@@ -150,6 +152,31 @@ def _is_rate_limited(phone: str) -> bool:
 @app.on_event("startup")
 async def startup():
     await asyncio.to_thread(_populate_pipe_map)
+    # ── Reidratação do estado persistido (Fase 3) ──────────────────────────────
+    # Reconstrói conversas, modos e pausas do SQLite — o bot não "esquece" mais
+    # os clientes após restart/deploy (incidente 05/07/2026).
+    await asyncio.to_thread(_hydrate_state)
+
+
+def _hydrate_state():
+    try:
+        henry_hydrate()
+        gabriel_hydrate()
+        now = time.time()
+        restauradas = 0
+        for phone, ts in store.all_state("pause_until").items():
+            try:
+                ts_f = float(ts)
+            except (TypeError, ValueError):
+                continue
+            if ts_f > now:
+                _human_pause_until[phone] = ts_f
+                restauradas += 1
+            else:
+                store.del_state(phone, "pause_until")
+        logger.info(f"Pausas humanas restauradas: {restauradas}")
+    except Exception as e:
+        logger.error(f"Hydrate geral falhou (bot segue sem estado prévio): {e}")
 
 
 def _populate_pipe_map():
@@ -467,6 +494,7 @@ async def record_outgoing_message(phone: str, text: str):
         # Ativa a pausa automática com auto-expiração
         resume_ts = _calc_resume_timestamp(time.time())
         _human_pause_until[phone] = resume_ts
+        store.set_state(phone, "pause_until", resume_ts)
         resume_dt = datetime.fromtimestamp(resume_ts, tz=_BR_TZ)
         logger.info(
             f"[{phone}] Intervenção humana detectada — bot pausado até "
@@ -697,9 +725,11 @@ async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
 # =============================================================================
 @app.api_route("/admin/reset/{phone}", methods=["GET", "POST"])
 async def reset_conversation(phone: str):
+    phone = canon_phone(phone)
     henry.reset_conversation(phone)
     gabriel.reset(phone)
     _human_pause_until.pop(phone, None)
+    store.del_state(phone, "pause_until")
     return {"status": "ok", "message": f"Conversa de {phone} reiniciada (pausa cancelada)"}
 
 
