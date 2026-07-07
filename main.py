@@ -28,6 +28,7 @@ from kommo import (
 from config import RATE_LIMIT_MAX_PER_MIN, HENRY_MAX_LEAD_AGE_HOURS
 from crm_enricher import enrich_lead_crm
 import followup
+import demandas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -159,6 +160,8 @@ async def startup():
     await asyncio.to_thread(_hydrate_state)
     # ── Follow-up automático (cadência anti-abandono) ──────────────────────────
     followup.start(henry, gabriel, kommo, zapi, _is_human_paused)
+    # ── Radar de Demandas (relatório diário/semanal de captação) ───────────────
+    demandas.start(zapi)
 
 
 def _hydrate_state():
@@ -739,6 +742,13 @@ async def reset_conversation(phone: str):
     store.del_state(phone, "pause_until")
     followup.cancel(phone)
     return {"status": "ok", "message": f"Conversa de {phone} reiniciada (pausa cancelada)"}
+
+
+@app.get("/admin/demandas")
+async def admin_demandas(semanal: bool = False):
+    """Gera o Radar de Demandas sob demanda (para teste/consulta imediata)."""
+    report = await asyncio.to_thread(demandas.build_report, semanal)
+    return {"report": report}
 
 
 @app.get("/admin/status/{phone}")
