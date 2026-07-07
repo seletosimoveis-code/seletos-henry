@@ -224,6 +224,37 @@ def _cache_pipe(key: str, substrings: list[str]) -> int | None:
     return result
 
 
+def get_pipe_cadencia(faixa: str) -> int | None:
+    """
+    Descobre os funis de Cadência por nome (criados manualmente na UI do Kommo).
+    faixa: 'ate300' | '301a600' | 'acima600' | 'locacao'
+
+    Espera nomes contendo 'cad' + o identificador da faixa, ex:
+      'Cadência | Até 300 mil', 'Cadência | 301 a 600 mil',
+      'Cadência | Acima de 600 mil', 'Cadência | Locação'
+    """
+    _FAIXA_TERMS = {
+        "ate300"  : ["até 300", "ate 300"],
+        "301a600" : ["301"],
+        "acima600": ["acima de 600", "acima 600", "600+"],
+        "locacao" : ["locação", "locacao", "aluguel"],
+    }
+    terms = _FAIXA_TERMS.get(faixa)
+    if not terms:
+        return None
+    cache_key = f"cadencia_{faixa}"
+    if _pipe_id_cache.get(cache_key):
+        return _pipe_id_cache[cache_key]
+    for p in _todos_os_pipelines():
+        nome = p.get("name", "").lower()
+        if "cad" in nome and any(t in nome for t in terms):
+            _pipe_id_cache[cache_key] = p["id"]
+            logger.info(f"Pipeline cadência '{faixa}' descoberto: id={p['id']} ({p.get('name')})")
+            return p["id"]
+    logger.warning(f"Pipeline cadência '{faixa}' não encontrado — lead frio fica onde está")
+    return None
+
+
 def get_pipe_captacao() -> int | None:
     return _cache_pipe("captacao", _PIPE_NOME_CAPTACAO)
 
@@ -765,6 +796,91 @@ class KommoClient:
         if raw.get("garagem"):
             result["garagem"] = raw["garagem"]
         return result
+
+    def mark_lead_cold(self, phone: str) -> None:
+        """
+        Após o 3º follow-up sem resposta:
+        1. Marca Score=Frio (só se vazio)
+        2. Move o lead para o funil de Cadência correto (ciclo de aquecimento
+           automático de longo prazo, definido pelo Felipe em 07/07/2026):
+             • Aluguel                     → Cadência | Locação
+             • Compra (Avulso) ≤ 300 mil   → Cadência | Até 300 mil
+             • Compra (Avulso) 301–600 mil → Cadência | 301 a 600 mil
+             • Compra (Avulso) > 600 mil   → Cadência | Acima de 600 mil
+             • Sem orçamento conhecido     → Cadência | 301 a 600 mil (faixa média)
+             • Demais funis (captação etc.) → permanece onde está, só marca frio
+        3. Registra nota explicando o esfriamento e o destino
+        """
+        lead = self.find_lead_by_phone(phone)
+        if not lead:
+            logger.info(f"[{phone}] mark_lead_cold: lead não encontrado")
+            return
+        lead_id = lead["id"]
+
+        ja_tem_score = any(
+            cf.get("field_id") == F_SCORE and cf.get("values")
+            for cf in (lead.get("custom_fields_values") or [])
+        )
+        if not ja_tem_score:
+            self._patch_field(lead_id, F_SCORE, {"enum_id": SCORE_ENUM["frio"]})
+            logger.info(f"[{phone}] Lead {lead_id} marcado FRIO após 3 follow-ups sem resposta")
+
+        # ── Roteia para o funil de Cadência ───────────────────────────────────
+        pipe_atual = lead.get("pipeline_id")
+        price      = int(lead.get("price") or 0)
+        destino    = None
+        destino_label = ""
+        if pipe_atual == PIPE_ALUGUEL:
+            destino, destino_label = get_pipe_cadencia("locacao"), "Cadência Locação"
+        elif pipe_atual == PIPE_AVULSO:
+            if price and price <= 300_000:
+                destino, destino_label = get_pipe_cadencia("ate300"), "Cadência Até 300 mil"
+            elif price > 600_000:
+                destino, destino_label = get_pipe_cadencia("acima600"), "Cadência Acima de 600 mil"
+            else:
+                destino, destino_label = get_pipe_cadencia("301a600"), "Cadência 301 a 600 mil"
+
+        lead_movido = False
+        if destino:
+            try:
+                entry_status = get_entry_status(destino)
+                if not entry_status:
+                    raise RuntimeError(f"status de entrada do pipeline {destino} indisponível")
+                resp = self._patch("leads", [{
+                    "id": lead_id, "pipeline_id": destino, "status_id": entry_status,
+                }])
+                atualizados = resp.get("_embedded", {}).get("leads", [])
+                if not any(l.get("id") == lead_id for l in atualizados):
+                    raise RuntimeError("Kommo retornou 200 mas não moveu o lead")
+                lead_movido = True
+                logger.info(f"[{phone}] Lead {lead_id} → {destino_label} (pipeline {destino})")
+            except Exception as e:
+                logger.error(f"[{phone}] Falha ao mover lead {lead_id} → {destino_label}: {e}")
+
+        if lead_movido:
+            texto_nota = (
+                f"🤖 Follow-up automático encerrado — cliente não respondeu a 3 toques "
+                f"(4h / 24h / 72h). Lead esfriou durante a qualificação do bot.\n"
+                f"➡️ Movido automaticamente para: {destino_label}"
+                f"{f' (orçamento: R$ {price:,})'.replace(',', '.') if price else ''}.\n"
+                f"O ciclo de aquecimento de longo prazo assume a partir daqui."
+            )
+        else:
+            texto_nota = (
+                "🤖 Follow-up automático encerrado — cliente não respondeu a 3 toques "
+                "(4h / 24h / 72h). Lead esfriou durante a qualificação do bot.\n"
+                "⚠️ Não foi movido para cadência (funil sem destino mapeado ou funil de "
+                "cadência inexistente). Sugestão: mover manualmente ou tentar ligação."
+            )
+        try:
+            self._post("leads/notes", [{
+                "entity_id"  : lead_id,
+                "entity_type": "leads",
+                "note_type"  : "common",
+                "params"     : {"text": texto_nota},
+            }])
+        except Exception as e:
+            logger.error(f"[{phone}] Erro ao registrar nota de esfriamento: {e}")
 
     def get_preference_note(self, lead_id: int) -> str | None:
         """

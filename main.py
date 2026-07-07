@@ -27,6 +27,7 @@ from kommo import (
 )
 from config import RATE_LIMIT_MAX_PER_MIN, HENRY_MAX_LEAD_AGE_HOURS
 from crm_enricher import enrich_lead_crm
+import followup
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,6 +157,8 @@ async def startup():
     # Reconstrói conversas, modos e pausas do SQLite — o bot não "esquece" mais
     # os clientes após restart/deploy (incidente 05/07/2026).
     await asyncio.to_thread(_hydrate_state)
+    # ── Follow-up automático (cadência anti-abandono) ──────────────────────────
+    followup.start(henry, gabriel, kommo, zapi, _is_human_paused)
 
 
 def _hydrate_state():
@@ -289,6 +292,9 @@ async def _process_message_inner(
         logger.info(f"[{phone}] Áudio → texto: '{text[:80]}'")
 
     logger.info(f"[{phone}] Mensagem: {text[:80]}")
+
+    # Cliente falou → zera o ciclo de follow-up automático
+    followup.record_client_activity(phone)
     try:
         # Gabriel ativo: só bloqueia se Gabriel estiver em modo humano
         if gabriel.is_active(phone):
@@ -495,6 +501,7 @@ async def record_outgoing_message(phone: str, text: str):
         resume_ts = _calc_resume_timestamp(time.time())
         _human_pause_until[phone] = resume_ts
         store.set_state(phone, "pause_until", resume_ts)
+        followup.cancel(phone)   # humano assumiu → follow-up do bot cancelado
         resume_dt = datetime.fromtimestamp(resume_ts, tz=_BR_TZ)
         logger.info(
             f"[{phone}] Intervenção humana detectada — bot pausado até "
@@ -730,6 +737,7 @@ async def reset_conversation(phone: str):
     gabriel.reset(phone)
     _human_pause_until.pop(phone, None)
     store.del_state(phone, "pause_until")
+    followup.cancel(phone)
     return {"status": "ok", "message": f"Conversa de {phone} reiniciada (pausa cancelada)"}
 
 
