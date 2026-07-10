@@ -30,6 +30,7 @@ from crm_enricher import enrich_lead_crm
 import followup
 import demandas
 import retroativo
+import faseb
 
 logging.basicConfig(
     level=logging.INFO,
@@ -170,6 +171,8 @@ async def startup():
     demandas.start(zapi)
     # ── Retroativo (revisão silenciosa sob demanda via /admin/retroativo) ──────
     retroativo.init(zapi)
+    # ── Fase B: revalidação ativa do Gabriel (via /admin/faseb) ────────────────
+    faseb.init(gabriel, henry, kommo, zapi, _is_human_paused)
 
 
 def _hydrate_state():
@@ -234,6 +237,11 @@ async def webhook_zapi(request: Request):
         phone_fm = canon_phone(body.get("phone", "").strip())
         text_fm  = (body.get("text") or {}).get("message", "").strip()
         tem_midia = bool((body.get("audio") or {}).get("audioUrl") or body.get("image") or body.get("video"))
+        # Log de diagnóstico: prova se os eventos "enviadas por mim" estão chegando
+        logger.info(
+            f"[fromMe] type={body.get('type')} phone={phone_fm} "
+            f"text_len={len(text_fm)} midia={tem_midia}"
+        )
         if phone_fm and (text_fm or tem_midia):
             asyncio.create_task(record_outgoing_message(phone_fm, text_fm or "[mídia]"))
             return JSONResponse({"status": "recorded", "reason": "fromMe — pausa humana avaliada"})
@@ -814,6 +822,24 @@ async def admin_retroativo_migrar(batch: int = 40, dry_run: bool = True, destino
 @app.get("/admin/retroativo/status")
 async def admin_retroativo_status():
     return retroativo.status()
+
+
+@app.api_route("/admin/faseb", methods=["GET", "POST"])
+async def admin_faseb(dry_run: bool = True, batch: int = 0):
+    """
+    Fase B — revalidação ativa: Gabriel pergunta "ainda está procurando?" a leads
+    com cadastro incompleto. dry_run=true mostra o lote e as mensagens sem enviar.
+    Modo real: só na janela seg–sex 9-18h / sáb 9-12h, lote padrão 12.
+    """
+    if faseb.is_running():
+        return {"status": "já em execução", "detalhes": faseb.status()}
+    resultado = await asyncio.to_thread(faseb.run, dry_run, batch)
+    return resultado
+
+
+@app.get("/admin/faseb/status")
+async def admin_faseb_status():
+    return faseb.status()
 
 
 @app.get("/admin/status/{phone}")
