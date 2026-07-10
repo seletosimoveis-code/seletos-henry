@@ -27,7 +27,7 @@ from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, KOMMO_SUBDOMAIN, KOMMO_TOKEN
 from kommo import (
     F_BAIRRO, F_DORMITORIOS, F_TIPO_IMOVEL, F_URGENCIA,
-    F_FORMA_PAGAMENTO, F_IMOVEIS_POTENCIAIS,
+    F_FORMA_PAGAMENTO, F_IMOVEIS_POTENCIAIS, F_MOTIVO_BUSCA,
     F_DATA_ENTRADA, F_ACEITA_ANIMAIS, F_TIPO_GARANTIA,
     F_PRE_APROVADO, F_IMOVEL_ATUAL, F_FINALIDADE,
     F_IMOVEL_VENDER, F_ENTRADA_DISPONIVEL, F_SCORE,
@@ -348,6 +348,15 @@ def build_fields_payload(extracted: dict, filled_ids: set,
     (pós-handoff) e o retroativo (revisão silenciosa).
     """
     fields_payload: list = []
+
+    # Motivo da Busca (text) — derivado do interesse extraído; base da realocação
+    _INTERESSE_MOTIVO = {"alugar": "Locação", "comprar": "Compra", "vender": "Proprietário"}
+    motivo = _INTERESSE_MOTIVO.get(str(extracted.get("interesse") or "").lower())
+    if motivo and F_MOTIVO_BUSCA not in filled_ids:
+        fields_payload.append({
+            "field_id": F_MOTIVO_BUSCA,
+            "values"  : [{"value": motivo}],
+        })
 
     # Bairro (text)
     if extracted.get("bairro") and F_BAIRRO not in filled_ids:

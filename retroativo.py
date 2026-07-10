@@ -110,14 +110,46 @@ def _paginate_leads(params_base: dict, keep) -> list[dict]:
     return leads
 
 
+def _pipes_de_cliente() -> list[int]:
+    """
+    Todos os pipelines de CLIENTE (exclui internos: Recepção — tem escopo próprio —,
+    Equipe/Corretores, Financeiro, Manutenção, Fornecedores).
+    """
+    EXCLUIR = ("recep", "equipe", "corretor", "financeiro", "manuten", "fornecedor")
+    pipes = []
+    try:
+        r = requests.get(f"{_BASE}/leads/pipelines", headers=_hdr(), timeout=15)
+        r.raise_for_status()
+        for p in r.json().get("_embedded", {}).get("pipelines", []):
+            nome = (p.get("name") or "").lower()
+            if any(t in nome for t in EXCLUIR):
+                continue
+            pipes.append(p["id"])
+    except Exception as e:
+        logger.error(f"retroativo: erro ao listar pipelines de cliente: {e}")
+        pipes = [PIPE_ALUGUEL, PIPE_AVULSO]   # fallback mínimo
+    return pipes
+
+
 def _fetch_leads(escopo: str = "ativos") -> list[dict]:
     """
     escopo:
       'ativos'   → leads ativos de Aluguel + Avulso
+      'todos'    → leads ativos de TODOS os funis de cliente (Aluguel, Avulso,
+                   Captação, Lançamentos, Investidor, Cadências, Avaliação etc.)
       'perdidos' → leads em 'Venda perdida' (143) de Aluguel + Avulso
                    (inclui os 602 fechados em massa pela automação de 05/07)
       'recepcao' → leads ativos parados na Recepção (balcão/entrada)
     """
+    if escopo == "todos":
+        leads = []
+        for pipe in _pipes_de_cliente():
+            leads += _paginate_leads(
+                {"filter[pipeline_id]": pipe},
+                keep=lambda ld: ld.get("status_id") not in (STATUS_GANHO, STATUS_PERDIDO),
+            )
+        return leads
+
     if escopo == "perdidos":
         leads = []
         for pipe in (PIPE_ALUGUEL, PIPE_AVULSO):
@@ -486,4 +518,74 @@ def migrar_perdidos(batch: int = 40, dry_run: bool = True, destino: str = "deman
     }
     store.set_state("global", "retroativo_migracao", resultado)
     logger.info(f"retroativo migração: {resultado}")
+    return resultado
+
+
+# ─── Realocação: leads no funil ERRADO (Motivo da Busca × pipeline) ───────────
+
+def realocar_desalinhados(batch: int = 20, dry_run: bool = True) -> dict:
+    """
+    Detecta e corrige leads ativos cujo Motivo da Busca (preenchido pela revisão
+    silenciosa) conflita com o funil onde estão. Exemplo real: Rafael #30602358,
+    quer COMPRAR ponto comercial (R$ 1,5M) mas está no funil Aluguel.
+
+      Aluguel + motivo Compra        → move para Avulso
+      Avulso  + motivo Locação       → move para Aluguel
+      Aluguel/Avulso + Proprietário  → move para Captação
+
+    ⚠️ Mover ativa o Gabriel PROATIVAMENTE no funil novo (mensagem ao cliente!)
+    → modo real só na janela 9h+ seg–sáb, em lotes, com supervisão (segunda-feira).
+    dry_run lista os conflitos para validação humana.
+    """
+    agora = datetime.now(_BR_TZ)
+    if not dry_run and (agora.hour < 9 or agora.weekday() == 6):
+        return {"status": "abortado", "motivo": "realocação real só após 9h (seg–sáb)"}
+
+    conflitos = []
+    for lead in _fetch_leads("ativos"):
+        motivo = ""
+        for cf in (lead.get("custom_fields_values") or []):
+            if cf.get("field_id") == F_MOTIVO and cf.get("values"):
+                motivo = str(cf["values"][0].get("value", "")).lower()
+                break
+        if not motivo:
+            continue
+        pipe = lead.get("pipeline_id")
+        destino, destino_label = None, ""
+        if "propriet" in motivo or "capta" in motivo:
+            destino, destino_label = get_pipe_captacao(), "Captação"
+        elif pipe == PIPE_ALUGUEL and "compra" in motivo:
+            destino, destino_label = PIPE_AVULSO, "Avulso (compra)"
+        elif pipe == PIPE_AVULSO and ("loca" in motivo or "alug" in motivo):
+            destino, destino_label = PIPE_ALUGUEL, "Aluguel"
+        if destino and destino != pipe:
+            conflitos.append({
+                "lead_id": lead.get("id"),
+                "nome"   : lead.get("name"),
+                "de"     : "Aluguel" if pipe == PIPE_ALUGUEL else "Avulso",
+                "para"   : destino_label,
+                "motivo" : motivo,
+                "_pipe"  : destino,
+            })
+
+    movidos, erros = 0, 0
+    if not dry_run:
+        for c in conflitos[:batch]:
+            if _move_lead(c["lead_id"], c["_pipe"]):
+                movidos += 1
+                time.sleep(2)   # espaça ativações do Gabriel
+            else:
+                erros += 1
+
+    resultado = {
+        "status"          : "simulação" if dry_run else "executado",
+        "conflitos_totais": len(conflitos),
+        "movidos"         : movidos,
+        "erros"           : erros,
+        "lista"           : [{k: v for k, v in c.items() if k != "_pipe"}
+                             for c in conflitos[:60]],
+    }
+    store.set_state("global", "retroativo_realocacao", resultado)
+    logger.info(f"retroativo realocação: {resultado['status']} — "
+                f"{len(conflitos)} conflitos, {movidos} movidos")
     return resultado

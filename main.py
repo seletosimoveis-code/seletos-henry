@@ -796,8 +796,8 @@ async def admin_retroativo(dry_run: bool = True, limit: int = 0, escopo: str = "
     'recepcao' (classifica e roteia leads parados na Recepção).
     dry_run=true (padrão) só simula. Acompanhe em /admin/retroativo/status.
     """
-    if escopo not in ("ativos", "perdidos", "recepcao"):
-        return {"erro": "escopo deve ser: ativos | perdidos | recepcao"}
+    if escopo not in ("ativos", "todos", "perdidos", "recepcao"):
+        return {"erro": "escopo deve ser: ativos | todos | perdidos | recepcao"}
     if retroativo.is_running():
         return {"status": "já em execução", "detalhes": retroativo.status()}
     asyncio.create_task(asyncio.to_thread(retroativo.run, dry_run, limit, escopo))
@@ -827,6 +827,17 @@ async def admin_retroativo_migrar(batch: int = 40, dry_run: bool = True, destino
 @app.get("/admin/retroativo/status")
 async def admin_retroativo_status():
     return retroativo.status()
+
+
+@app.api_route("/admin/retroativo/realocar", methods=["GET", "POST"])
+async def admin_retroativo_realocar(batch: int = 20, dry_run: bool = True):
+    """
+    Leads no funil errado (Motivo da Busca × pipeline): dry_run lista os
+    conflitos; modo real move em lotes (ativa Gabriel no funil certo — só
+    com supervisão, janela 9h+ seg–sáb).
+    """
+    resultado = await asyncio.to_thread(retroativo.realocar_desalinhados, batch, dry_run)
+    return resultado
 
 
 @app.api_route("/admin/faseb", methods=["GET", "POST"])
