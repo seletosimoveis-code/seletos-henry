@@ -411,6 +411,7 @@ class KommoClient:
             F_PRE_APROVADO      : "pre_aprovado",
             F_IMOVEL_VENDER     : "imovel_vender",
             F_SCORE             : "score",
+            F_IMOVEL_ORIG       : "imovel_origem",
         }
 
         for cf in (lead.get("custom_fields_values") or []):
@@ -744,6 +745,7 @@ class KommoClient:
             F_PRE_APROVADO      : "pre_aprovado",
             F_IMOVEL_VENDER     : "imovel_vender",
             F_SCORE             : "score",
+            F_IMOVEL_ORIG       : "imovel_origem",
         }
         for cf in (lead.get("custom_fields_values") or []):
             fid  = cf.get("field_id")

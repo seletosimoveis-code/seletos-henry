@@ -177,6 +177,9 @@ class AgentManager:
         if ctx.get("canal_origem"): lines.append(f"Canal de origem: {ctx['canal_origem']}")
         if ctx.get("pipeline"):     lines.append(f"Funil: {ctx['pipeline']}")
         if ctx.get("stage"):        lines.append(f"Etapa: {ctx['stage']}")
+        if ctx.get("imovel_origem"):
+            lines.append(f"⭐ IMÓVEL DE ORIGEM (anúncio pelo qual o cliente chegou): {ctx['imovel_origem']}")
+            lines.append("   → Reconheça este imóvel na conversa. NUNCA diga que não recebeu referência.")
 
         # Dados já coletados na triagem (pelo Henry)
         ja_coletado = []

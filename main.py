@@ -129,11 +129,16 @@ def _is_bot_echo(phone: str, text: str) -> bool:
     return False
 
 def _is_duplicate_message(phone: str, text: str) -> bool:
-    """True se a mesma mensagem já foi processada nos últimos 30 segundos para este número."""
-    key = f"{phone}:{hash(text) & 0xFFFFFF}"
-    now = time.time()
+    """
+    True se a mesma mensagem já foi processada nos últimos 90 segundos.
+    Texto normalizado (strip+lower) — Z-API às vezes reenvia a mesma mensagem
+    com variações de espaço/quote, gerando resposta dupla do bot.
+    """
+    norm = (text or "").strip().lower()
+    key  = f"{phone}:{hash(norm) & 0xFFFFFF}"
+    now  = time.time()
     for k in list(_msg_dedup):
-        if now - _msg_dedup[k] > 30:
+        if now - _msg_dedup[k] > 90:
             del _msg_dedup[k]
     if key in _msg_dedup:
         return True
@@ -219,6 +224,21 @@ async def webhook_zapi(request: Request):
         return JSONResponse({"status": "ignored", "reason": "group"})
     if body.get("isNewsletter"):
         return JSONResponse({"status": "ignored", "reason": "newsletter"})
+
+    # ── fromMe ANTES do filtro de tipo (correção 07/07) ───────────────────────
+    # Mensagens enviadas pela EQUIPE (celular, WhatsApp Web, Kommo) chegam pelo
+    # evento "ao enviar" da Z-API com type diferente de ReceivedCallback.
+    # O filtro de tipo vinha ANTES e as descartava → a pausa humana nunca
+    # disparava e o bot atropelava atendimentos da equipe.
+    if body.get("fromMe"):
+        phone_fm = canon_phone(body.get("phone", "").strip())
+        text_fm  = (body.get("text") or {}).get("message", "").strip()
+        tem_midia = bool((body.get("audio") or {}).get("audioUrl") or body.get("image") or body.get("video"))
+        if phone_fm and (text_fm or tem_midia):
+            asyncio.create_task(record_outgoing_message(phone_fm, text_fm or "[mídia]"))
+            return JSONResponse({"status": "recorded", "reason": "fromMe — pausa humana avaliada"})
+        return JSONResponse({"status": "ignored", "reason": "fromMe sem conteúdo"})
+
     if body.get("type") != "ReceivedCallback":
         return JSONResponse({"status": "ignored", "reason": "not a message"})
 
@@ -776,13 +796,17 @@ async def admin_retroativo(dry_run: bool = True, limit: int = 0, escopo: str = "
 
 
 @app.api_route("/admin/retroativo/migrar", methods=["GET", "POST"])
-async def admin_retroativo_migrar(batch: int = 40, dry_run: bool = True):
+async def admin_retroativo_migrar(batch: int = 40, dry_run: bool = True, destino: str = "demanda"):
     """
-    Migra leads 'Venda perdida' para os funis de Cadência, em lotes.
-    Rode a revisão silenciosa (escopo=perdidos) ANTES, para a cadência
-    encontrar cadastros completos.
+    Resgata leads 'Venda perdida' (Aluguel + Avulso) em lotes.
+    destino='demanda' (padrão): devolve à etapa DEmanda do próprio funil.
+    destino='cadencia': envia aos funis de Cadência por faixa de valor.
+    Rode a revisão silenciosa (escopo=perdidos) ANTES, para os leads
+    voltarem com cadastro completo.
     """
-    resultado = await asyncio.to_thread(retroativo.migrar_perdidos, batch, dry_run)
+    if destino not in ("demanda", "cadencia"):
+        return {"erro": "destino deve ser: demanda | cadencia"}
+    resultado = await asyncio.to_thread(retroativo.migrar_perdidos, batch, dry_run, destino)
     return resultado
 
 
