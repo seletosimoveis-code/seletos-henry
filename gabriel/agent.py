@@ -78,10 +78,14 @@ class GabrielManager:
 
     # ─── Ativação proativa ────────────────────────────────────────────────────
 
-    def activate(self, phone: str, funil: str, sender_name: str, lead_context: dict) -> str:
+    def activate(self, phone: str, funil: str, sender_name: str, lead_context: dict,
+                 henry_tail: list[dict] | None = None) -> str:
         """
         Ativa Gabriel para o telefone indicado e gera a primeira mensagem proativa.
-        Chamado pelo webhook do Kommo quando o lead entra no funil.
+        Chamado pelo webhook do Kommo quando o lead entra no funil, ou diretamente
+        no handoff do Henry (com henry_tail = últimos turnos da triagem, para o
+        Gabriel NÃO nascer cego — correção do erro de 08/07: Gabriel ignorava a
+        pergunta viva do cliente e recomeçava a qualificação do zero).
 
         funil: 'aluguel' | 'avulso' | 'captacao' | 'lancamentos' | 'investidor'
         Retorna o texto da primeira mensagem.
@@ -101,11 +105,38 @@ class GabrielManager:
         # Inject a "start" user turn para forçar Gabriel a gerar a 1ª mensagem
         seed = [{"role": "user", "content": "__INICIO__"}]
 
+        # ── Conversa da triagem: Gabriel enxerga o que acabou de acontecer ─────
+        # Sem isso, Gabriel nasce cego: ignora a pergunta viva do cliente,
+        # inventa enquadramentos ("você quer se mudar já") e recomeça do zero.
+        tail_block = ""
+        ultima_msg_cliente = ""
+        if henry_tail:
+            convo = "\n".join(
+                f"{'Cliente' if m['role'] == 'user' else 'Henry'}: {m['content']}"
+                for m in henry_tail[-8:]
+            )
+            ultima_msg_cliente = next(
+                (m["content"] for m in reversed(henry_tail) if m["role"] == "user"), ""
+            )
+            tail_block = (
+                "\n\n══════════════════════════════════════════════\n"
+                "CONVERSA IMEDIATAMENTE ANTERIOR (triagem do Henry — acabou de acontecer):\n"
+                f"{convo}\n"
+                "══════════════════════════════════════════════\n"
+                f"⚠️ ÚLTIMA MENSAGEM DO CLIENTE: \"{ultima_msg_cliente}\"\n"
+                "REGRAS DA SUA PRIMEIRA MENSAGEM:\n"
+                "1. Se a última mensagem do cliente é uma PERGUNTA (ex: garantia, documentos, "
+                "processo), sua primeira mensagem DEVE respondê-la diretamente com seu "
+                "conhecimento — apresentação em 1 linha, resposta na sequência.\n"
+                "2. NUNCA afirme coisas que o cliente não disse (ex: 'você já quer se mudar').\n"
+                "3. NUNCA recomece a qualificação ignorando a conversa acima — continue DELA."
+            )
+
         # Se Henry já coletou dados, Gabriel usa o contexto para não repetir perguntas
         _CAMPOS_HENRY = ["tipo_imovel", "dormitorios", "garagem", "orcamento", "bairro", "data_entrada", "motivo_busca"]
         dados_henry = [k for k in _CAMPOS_HENRY if lead_context.get(k)]
         if dados_henry:
-            init_instruction = (
+            init_instruction = tail_block + (
                 "\n\nSe receber '__INICIO__': o Henry já coletou dados do cliente (veja CONTEXTO DO LEAD acima). "
                 "NÃO repita perguntas sobre o que já está preenchido. "
                 "Envie uma mensagem de boas-vindas personalizada mencionando o que já sabe "
@@ -113,9 +144,9 @@ class GabrielManager:
                 "Seja específico — mostre que você leu o perfil do Henry."
             )
         else:
-            init_instruction = (
-                "\n\nSe receber '__INICIO__', envie apenas a PRIMEIRA MENSAGEM proativa "
-                "definida no seu prompt, sem mais nada."
+            init_instruction = tail_block + (
+                "\n\nSe receber '__INICIO__', envie a PRIMEIRA MENSAGEM proativa "
+                "definida no seu prompt (respeitando as regras da conversa anterior, se houver)."
             )
 
         try:

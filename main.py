@@ -473,7 +473,8 @@ async def _process_message_inner(
                         logger.info(f"[{phone}] Preferências comportamentais carregadas para Gabriel")
 
                 first_msg_gab = await asyncio.to_thread(
-                    gabriel.activate, phone, funil_gab, name, lead_ctx_gab
+                    gabriel.activate, phone, funil_gab, name, lead_ctx_gab,
+                    henry.get_history(phone)[-8:],   # Gabriel vê a triagem — não nasce cego
                 )
                 await asyncio.to_thread(zapi.send_typing, phone, 2500)
                 await asyncio.sleep(2.5)
