@@ -21,7 +21,7 @@ from gabriel.agent import GabrielManager, PIPE_TO_FUNIL, hydrate_from_store as g
 import store
 from zapi import ZAPIClient
 from kommo import (
-    KommoClient, canon_phone,
+    KommoClient, canon_phone, is_equipe_phone,
     PIPE_ALUGUEL, PIPE_AVULSO,
     get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
 )
@@ -274,6 +274,11 @@ async def webhook_zapi(request: Request):
         # Mensagem enviada pelo atendente humano — registra no histórico sem responder.
         asyncio.create_task(record_outgoing_message(phone, text or "[áudio]"))
         return JSONResponse({"status": "recorded", "reason": "fromMe — adicionado ao histórico"})
+
+    # Números da equipe: nenhum robô interage (EQUIPE_PHONES no Railway)
+    if is_equipe_phone(phone):
+        logger.info(f"[{phone}] Número da equipe — robôs não interagem")
+        return JSONResponse({"status": "ignored", "reason": "equipe"})
 
     if _is_rate_limited(phone):
         return JSONResponse({"status": "ignored", "reason": "rate limit"})

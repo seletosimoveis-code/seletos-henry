@@ -32,7 +32,7 @@ from datetime import datetime, timezone, timedelta
 
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, KOMMO_SUBDOMAIN, KOMMO_TOKEN
-from kommo import PIPE_ALUGUEL, PIPE_AVULSO
+from kommo import PIPE_ALUGUEL, PIPE_AVULSO, is_equipe_phone
 from crm_enricher import JUNK_PRICE_MAX
 import store
 import followup
@@ -220,6 +220,9 @@ def run(dry_run: bool = True, batch: int = 0) -> dict:
                 phone, nome, ctx = _kommo.get_lead_phone_and_context(lead_id)
                 if not phone:
                     stats["sem_telefone"] += 1
+                    continue
+                if is_equipe_phone(phone):
+                    stats["pulados_estado"] += 1
                     continue
                 if (_is_paused_fn(phone) or _gabriel.is_active(phone)
                         or _gabriel.is_human_mode(phone) or _henry.is_human_mode(phone)):

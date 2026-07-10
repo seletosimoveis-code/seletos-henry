@@ -31,6 +31,7 @@ from datetime import datetime, timezone, timedelta
 
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY
+from kommo import is_equipe_phone
 import store
 
 logger  = logging.getLogger(__name__)
@@ -147,6 +148,9 @@ async def _check_once() -> None:
 
     for phone, fu in store.all_state("fu").items():
         try:
+            if is_equipe_phone(phone):
+                cancel(phone)
+                continue
             if not isinstance(fu, dict) or fu.get("done"):
                 continue
             touches = int(fu.get("touches", 0))

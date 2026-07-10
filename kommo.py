@@ -7,6 +7,7 @@ e registro de notas/tarefas após handoff do Henry (bot).
 IDs verificados em 2026-06-26 via listar_campos.py.
 """
 
+import os
 import re
 import time
 import logging
@@ -49,6 +50,19 @@ def canon_phone(raw: str) -> str:
     if 10 <= len(digits) <= 11:
         return "55" + digits
     return digits
+
+
+# ─── Números da equipe — NENHUM robô interage com eles ────────────────────────
+# Env EQUIPE_PHONES: números separados por vírgula (com ou sem 9º dígito/DDI).
+# Evita que testes internos virem "leads": sem Henry, sem Gabriel, sem follow-up,
+# sem Fase B. Para testar de propósito, remova o número da variável no Railway.
+EQUIPE_PHONES: set = {
+    canon_phone(p) for p in os.getenv("EQUIPE_PHONES", "").split(",") if p.strip()
+}
+
+
+def is_equipe_phone(phone: str) -> bool:
+    return bool(EQUIPE_PHONES) and canon_phone(phone) in EQUIPE_PHONES
 
 
 # ─── IDs dos campos customizados ──────────────────────────────────────────────
