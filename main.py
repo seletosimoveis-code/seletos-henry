@@ -52,6 +52,28 @@ _rate_timestamps: dict[str, list[float]] = {}
 _msg_dedup: dict[str, float] = {}   # "phone:hash" → timestamp
 _processing_phones: set[str] = set()  # phones com process_message em andamento
 
+# ─── Agregador de mensagens picadas (debounce) ────────────────────────────────
+# Brasileiro digita em pedaços ("Já vi aqui" / "Já sei"). Sem agregação, cada
+# pedaço virava uma resposta do bot (caso Ismael 11/07, 2 respostas em 30s).
+# Espera DEBOUNCE_S juntando os pedaços e processa UMA vez.
+DEBOUNCE_S = float(os.getenv("MSG_DEBOUNCE_SECONDS", "6"))
+_msg_buffer:  dict[str, list[str]]   = {}
+_buffer_task: dict[str, asyncio.Task] = {}
+_buffer_name: dict[str, str]          = {}
+
+
+async def _debounced_process(phone: str):
+    try:
+        await asyncio.sleep(DEBOUNCE_S)
+    except asyncio.CancelledError:
+        return   # chegou mais um pedaço — a nova task processa tudo junto
+    texts = _msg_buffer.pop(phone, [])
+    name  = _buffer_name.pop(phone, "")
+    _buffer_task.pop(phone, None)
+    if texts:
+        await process_message(phone, "\n".join(texts), name)
+
+
 # ─── Proteção contra tempestade de webhooks ───────────────────────────────────
 # Máximo de ativações proativas (Henry/Gabriel) processadas em paralelo.
 # Sem isso, um evento em massa no Kommo (ex: fechar 248 leads de uma vez)
@@ -311,8 +333,18 @@ async def webhook_zapi(request: Request):
         logger.warning(f"[{phone}] Mensagem duplicada detectada — ignorando")
         return JSONResponse({"status": "ignored", "reason": "duplicate"})
 
-    asyncio.create_task(process_message(phone, text, name, audio_url=audio_url, audio_mime=audio_mime))
-    return JSONResponse({"status": "queued"})
+    # Áudio: processa direto (transcrição não se agrega). Texto: agrega pedaços.
+    if audio_url:
+        asyncio.create_task(process_message(phone, text, name, audio_url=audio_url, audio_mime=audio_mime))
+        return JSONResponse({"status": "queued"})
+
+    _msg_buffer.setdefault(phone, []).append(text)
+    _buffer_name[phone] = name
+    tarefa_anterior = _buffer_task.get(phone)
+    if tarefa_anterior and not tarefa_anterior.done():
+        tarefa_anterior.cancel()
+    _buffer_task[phone] = asyncio.create_task(_debounced_process(phone))
+    return JSONResponse({"status": "buffered", "aguardando": f"{DEBOUNCE_S}s"})
 
 
 async def process_message(
