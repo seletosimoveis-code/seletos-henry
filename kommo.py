@@ -860,6 +860,35 @@ class KommoClient:
             result["garagem"] = raw["garagem"]
         return result
 
+    def mark_duplicate(self, lead_novo_id: int, lead_original_id: int) -> None:
+        """
+        Marca lead recém-criado como duplicata de um lead ativo existente
+        (padrão Canal Pro: portal cria lead novo para contato que já tem lead).
+        Cria nota + tarefa para a equipe fundir na interface do Kommo.
+        """
+        try:
+            self._post("leads/notes", [{
+                "entity_id"  : lead_novo_id,
+                "entity_type": "leads",
+                "note_type"  : "common",
+                "params"     : {"text": (
+                    f"🔁 DUPLICATA DETECTADA — este contato já possui o lead ativo "
+                    f"#{lead_original_id}, que é onde o atendimento está acontecendo.\n"
+                    f"Ação: fundir este lead no #{lead_original_id} pela interface do "
+                    f"Kommo (mesclar preserva o histórico)."
+                )},
+            }])
+            self._post("tasks", [{
+                "entity_id"    : lead_novo_id,
+                "entity_type"  : "leads",
+                "task_type_id" : 1,
+                "text"         : f"🔁 Duplicata: fundir no lead #{lead_original_id} (mesclar no Kommo)",
+                "complete_till": int(time.time()) + 86400,
+            }])
+            logger.info(f"Lead {lead_novo_id} marcado como duplicata de {lead_original_id}")
+        except Exception as e:
+            logger.error(f"Erro ao marcar duplicata {lead_novo_id}: {e}")
+
     def mark_lead_cold(self, phone: str) -> None:
         """
         Após o 3º follow-up sem resposta:

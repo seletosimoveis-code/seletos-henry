@@ -761,6 +761,20 @@ async def activate_henry_for_lead(lead_id: int):
             logger.warning(f"Lead {lead_id} sem telefone — Henry nao ativado")
             return
 
+        # ── Prevenção de duplicatas (padrão Canal Pro, 11/07) ──────────────────
+        # Portal cria lead novo para contato que JÁ tem lead ativo → marca como
+        # duplicata (nota + tarefa de merge) e NÃO inicia novo atendimento.
+        lead_existente = await asyncio.to_thread(kommo.find_lead_by_phone, phone)
+        if lead_existente and lead_existente.get("id") != lead_id:
+            logger.info(
+                f"[{phone}] Lead {lead_id} é duplicata do lead ativo "
+                f"{lead_existente['id']} — marcando e não ativando Henry"
+            )
+            asyncio.create_task(asyncio.to_thread(
+                kommo.mark_duplicate, lead_id, lead_existente["id"]
+            ))
+            return
+
         # Não reativa se já há atendimento em andamento para este número
         if henry.is_human_mode(phone) or gabriel.is_active(phone) or gabriel.is_human_mode(phone):
             logger.info(f"[{phone}] Ja tem atendimento ativo — nao reativa Henry")
