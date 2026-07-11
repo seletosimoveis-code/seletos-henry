@@ -173,6 +173,14 @@ class AgentManager:
         if not ctx:
             return f"Nome: {name or 'Desconhecido'}\nStatus: Lead novo — sem histórico no CRM."
 
+        if ctx.get("cliente_ativo"):
+            return (
+                f"Nome: {ctx.get('name') or name or 'Desconhecido'}\n"
+                f"🔒 CLIENTE DA CASA — contrato GANHO com a Seletos ({ctx.get('pipeline', '')}).\n"
+                "NÃO é lead novo. NÃO faça triagem. NÃO pergunte sobre busca de imóvel.\n"
+                "Responda com cordialidade e transfira IMEDIATAMENTE: [HANDOFF: SUPORTE]"
+            )
+
         lines = [f"Nome: {ctx.get('name') or name or 'Desconhecido'}"]
         if ctx.get("canal_origem"): lines.append(f"Canal de origem: {ctx['canal_origem']}")
         if ctx.get("pipeline"):     lines.append(f"Funil: {ctx['pipeline']}")

@@ -398,10 +398,38 @@ class KommoClient:
             logger.warning(f"Erro ao buscar lead {norm}: {e}")
         return None
 
+    def _find_won_lead(self, phone: str) -> dict | None:
+        """Lead FECHADO COM GANHO mais recente (cliente com contrato na casa)."""
+        norm = _norm_phone(phone)
+        try:
+            data     = self._get("contacts", {"query": norm, "with": "leads", "limit": 5})
+            contacts = data.get("_embedded", {}).get("contacts", [])
+            for contact in contacts:
+                leads = (contact.get("_embedded") or {}).get("leads", [])
+                for stub in sorted(leads, key=lambda l: l["id"], reverse=True):
+                    lead = self._get(f"leads/{stub['id']}", {"with": "pipeline,status"})
+                    if lead.get("status_id") == STATUS_GANHO:
+                        return lead
+        except Exception as e:
+            logger.warning(f"_find_won_lead {norm}: {e}")
+        return None
+
     def get_lead_context(self, phone: str) -> dict:
         """Retorna contexto completo do lead para o prompt do Claude."""
         lead = self.find_lead_by_phone(phone)
         if not lead:
+            # Sem lead ativo — mas pode ser CLIENTE DA CASA (contrato ganho).
+            # Caso Edileide (11/07): proprietária com captação ganha era tratada
+            # como lead novo e interrogada sobre busca de imóvel.
+            ganho = self._find_won_lead(phone)
+            if ganho:
+                pipe_nome = ((ganho.get("_embedded") or {}).get("pipeline") or {}).get("name", "")
+                return {
+                    "id"           : ganho.get("id"),
+                    "name"         : ganho.get("name", ""),
+                    "cliente_ativo": True,
+                    "pipeline"     : pipe_nome,
+                }
             return {}
 
         ctx = {"id": lead.get("id"), "name": lead.get("name", "")}
@@ -526,11 +554,30 @@ class KommoClient:
             "FORNECEDOR"          : PIPE_FORNECEDORES,
         }
         pipe_destino  = HANDOFF_PIPELINE.get(handoff_reason)
+
+        # Descoberta dinâmica falhou (cache frio/API oscilou)? Força re-descoberta.
+        # Caso real 07/07: proprietário qualificado ficou preso na Recepção porque
+        # get_pipe_captacao() retornou None no momento do handoff.
+        if pipe_destino is None and handoff_reason in HANDOFF_PIPELINE:
+            _pipe_id_cache.pop("all", None)
+            _RETRY_FN = {
+                "GABRIEL_CAPTACAO"   : get_pipe_captacao,
+                "GABRIEL_LANCAMENTOS": get_pipe_lancamentos,
+                "GABRIEL_INVESTIDOR" : get_pipe_investidor,
+                "CORRETOR"           : get_pipe_corretores,
+            }
+            fn = _RETRY_FN.get(handoff_reason)
+            if fn:
+                pipe_destino = fn()
+                logger.info(f"Re-descoberta do pipeline para {handoff_reason}: {pipe_destino}")
+
         lead_movido   = False
         if pipe_destino:
             logger.info(f"Movendo lead {lead_id} → pipeline {pipe_destino} (handoff={handoff_reason})")
             try:
                 entry_status = get_entry_status(pipe_destino)
+                if not entry_status:
+                    entry_status = get_entry_status(pipe_destino)   # 2ª tentativa (API oscilou)
                 if not entry_status:
                     # Kommo IGNORA silenciosamente PATCH de pipeline_id sem status_id (200 OK sem mover).
                     # Sem status_id válido, aborta e deixa lead_movido=False → tarefa sai com aviso ⚠️.

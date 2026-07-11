@@ -31,7 +31,7 @@ from datetime import datetime, timezone, timedelta
 
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY
-from kommo import is_equipe_phone
+from kommo import is_equipe_phone, get_pipe_captacao
 import store
 
 logger  = logging.getLogger(__name__)
@@ -163,6 +163,22 @@ async def _check_once() -> None:
 
             # ── Elegibilidade no momento do envio ────────────────────────────
             if _is_paused_fn and _is_paused_fn(phone):
+                continue
+
+            # ── Follow-up é SÓ para locatários/compradores em busca ativa ─────
+            # Regra do Felipe (11/07): proprietários e clientes com contrato
+            # ganho NUNCA recebem abordagem automática — só contato humano
+            # quando houver pendência. (Caso Edileide: proprietária com
+            # captação ganha recebeu 2 toques como se buscasse imóvel.)
+            lead_atual = await asyncio.to_thread(_kommo.find_lead_by_phone, phone)
+            if not lead_atual:
+                # Sem lead ATIVO (ex: contrato ganho/fechado) → não abordar
+                logger.info(f"[{phone}] Follow-up cancelado — sem lead ativo (cliente fechado?)")
+                cancel(phone)
+                continue
+            if lead_atual.get("pipeline_id") == get_pipe_captacao():
+                logger.info(f"[{phone}] Follow-up cancelado — proprietário (Captação)")
+                cancel(phone)
                 continue
             if _gabriel.is_active(phone) and not _gabriel.is_human_mode(phone):
                 bot, bot_name = _gabriel, "Gabriel"
