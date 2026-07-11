@@ -235,6 +235,22 @@ async def webhook_zapi(request: Request):
     # disparava e o bot atropelava atendimentos da equipe.
     if body.get("fromMe"):
         phone_fm = canon_phone(body.get("phone", "").strip())
+        # ── LID no lugar do telefone (descoberta 11/07, caso Ismael) ──────────
+        # O WhatsApp usa identificadores de privacidade (LID, 14+ dígitos) em
+        # alguns chats. A pausa caía na chave do LID e o número real do cliente
+        # ficava DESPROTEGIDO. Resolvemos pelo mapa LID→telefone aprendido nas
+        # mensagens recebidas.
+        digits_fm = re.sub(r"\D", "", body.get("phone", "") or "")
+        if len(digits_fm) >= 14:
+            mapeado = store.all_state("lid_map").get(digits_fm)
+            if mapeado:
+                phone_fm = canon_phone(str(mapeado))
+                logger.info(f"[fromMe] LID {digits_fm} → {phone_fm} (mapeado)")
+            else:
+                logger.warning(
+                    f"[fromMe] phone parece LID sem mapeamento: {digits_fm} — "
+                    f"keys={list(body.keys())[:15]}"
+                )
         text_fm  = (body.get("text") or {}).get("message", "").strip()
         tem_midia = bool((body.get("audio") or {}).get("audioUrl") or body.get("image") or body.get("video"))
         # Log de diagnóstico: prova se os eventos "enviadas por mim" estão chegando
@@ -254,6 +270,14 @@ async def webhook_zapi(request: Request):
     phone = canon_phone(body.get("phone", "").strip())
     text  = (body.get("text") or {}).get("message", "").strip()
     name  = body.get("senderName", "").strip()
+
+    # Aprende o mapa LID→telefone (usado para resolver eventos fromMe com LID)
+    for _lid_field in ("lid", "senderLid", "chatLid", "participantLid"):
+        _lid_raw = str(body.get(_lid_field) or "")
+        _lid_digits = re.sub(r"\D", "", _lid_raw)
+        if len(_lid_digits) >= 14 and phone:
+            store.set_state(_lid_digits, "lid_map", phone)
+            break
 
     # Detecta áudio (ptt = Push To Talk = gravação de voz; audio = arquivo de áudio)
     audio_data  = body.get("audio") or {}
