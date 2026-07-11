@@ -885,6 +885,15 @@ async def admin_retroativo_status():
     return retroativo.status()
 
 
+@app.get("/admin/duplicados")
+async def admin_duplicados():
+    """
+    Leads duplicados: mesmo telefone com 2+ leads ATIVOS. Só leitura —
+    o merge é feito na interface do Kommo. Demora ~1-2 min (varre contatos).
+    """
+    return await asyncio.to_thread(retroativo.relatorio_duplicados)
+
+
 @app.api_route("/admin/retroativo/realocar", methods=["GET", "POST"])
 async def admin_retroativo_realocar(batch: int = 20, dry_run: bool = True):
     """

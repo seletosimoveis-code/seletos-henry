@@ -32,6 +32,7 @@ from config import KOMMO_SUBDOMAIN, KOMMO_TOKEN
 from kommo import (
     PIPE_ALUGUEL, PIPE_AVULSO, PIPE_RECEPCAO,
     get_pipe_cadencia, get_pipe_captacao, get_entry_status,
+    canon_phone,
 )
 from crm_enricher import (
     _extract_via_llm, _patch_lead, build_fields_payload,
@@ -518,6 +519,103 @@ def migrar_perdidos(batch: int = 40, dry_run: bool = True, destino: str = "deman
     }
     store.set_state("global", "retroativo_migracao", resultado)
     logger.info(f"retroativo migração: {resultado}")
+    return resultado
+
+
+# ─── Relatório de leads DUPLICADOS (mesmo telefone, 2+ leads ativos) ──────────
+
+def relatorio_duplicados() -> dict:
+    """
+    Agrupa leads ATIVOS por telefone do contato e lista os grupos com 2+ leads.
+    Duplicata infla o Radar de Demandas e polui os lotes de segunda-feira.
+    SÓ LEITURA — o merge é feito na interface do Kommo (preserva histórico).
+    """
+    # 1. Mapa de leads ativos (funis de cliente + Recepção) com nome do funil
+    nomes_pipes: dict[int, str] = {}
+    try:
+        r = requests.get(f"{_BASE}/leads/pipelines", headers=_hdr(), timeout=15)
+        r.raise_for_status()
+        for p in r.json().get("_embedded", {}).get("pipelines", []):
+            nomes_pipes[p["id"]] = p.get("name", str(p["id"]))
+    except Exception as e:
+        logger.error(f"duplicados: pipelines: {e}")
+
+    pipes_alvo = set(_pipes_de_cliente()) | {PIPE_RECEPCAO}
+    lead_info: dict[int, dict] = {}
+    for pipe in pipes_alvo:
+        for ld in _paginate_leads(
+            {"filter[pipeline_id]": pipe},
+            keep=lambda l: l.get("status_id") not in (STATUS_GANHO, STATUS_PERDIDO),
+        ):
+            lead_info[ld["id"]] = {
+                "lead_id": ld["id"],
+                "nome"   : ld.get("name") or f"#{ld['id']}",
+                "funil"  : nomes_pipes.get(ld.get("pipeline_id"), "?"),
+            }
+
+    # 2. Varre contatos e agrupa leads ativos por telefone canônico
+    por_fone: dict[str, set] = {}
+    page = 1
+    while page <= 30:
+        try:
+            r = requests.get(
+                f"{_BASE}/contacts", headers=_hdr(),
+                params={"limit": 250, "page": page, "with": "leads"},
+                timeout=25,
+            )
+            if r.status_code == 204:
+                break
+            r.raise_for_status()
+            contatos = r.json().get("_embedded", {}).get("contacts", [])
+        except Exception as e:
+            logger.error(f"duplicados: contatos p{page}: {e}")
+            break
+        if not contatos:
+            break
+        for c in contatos:
+            fone = ""
+            for cf in (c.get("custom_fields_values") or []):
+                if cf.get("field_code") in ("PHONE", "TEL") and cf.get("values"):
+                    fone = canon_phone(str(cf["values"][0].get("value", "")))
+                    break
+            if not fone:
+                continue
+            ativos = {
+                s["id"] for s in ((c.get("_embedded") or {}).get("leads") or [])
+                if s.get("id") in lead_info
+            }
+            if ativos:
+                por_fone.setdefault(fone, set()).update(ativos)
+        if len(contatos) < 250:
+            break
+        page += 1
+
+    # 3. Grupos com 2+ leads ativos = duplicados
+    grupos = []
+    for fone, ids in por_fone.items():
+        if len(ids) >= 2:
+            grupos.append({
+                "telefone": fone,
+                "qtd"     : len(ids),
+                "leads"   : sorted(
+                    (lead_info[i] for i in ids), key=lambda x: x["lead_id"]
+                ),
+            })
+    grupos.sort(key=lambda g: g["qtd"], reverse=True)
+
+    resultado = {
+        "leads_ativos_varridos" : len(lead_info),
+        "telefones_com_lead"    : len(por_fone),
+        "grupos_duplicados"     : len(grupos),
+        "leads_envolvidos"      : sum(g["qtd"] for g in grupos),
+        "como_resolver"         : "Merge pela interface do Kommo (preserva histórico/notas). "
+                                  "Mantenha o lead mais avançado no funil; funda os demais nele.",
+        "grupos"                : grupos[:80],
+    }
+    store.set_state("global", "retroativo_duplicados", resultado)
+    logger.info(
+        f"duplicados: {len(grupos)} grupos, {resultado['leads_envolvidos']} leads envolvidos"
+    )
     return resultado
 
 
