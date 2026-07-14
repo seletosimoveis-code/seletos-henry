@@ -860,6 +860,19 @@ class KommoClient:
             result["garagem"] = raw["garagem"]
         return result
 
+    def add_task(self, lead_id: int, texto: str, prazo_segundos: int = 86400) -> None:
+        """Cria tarefa simples num lead (usada para alertas à equipe)."""
+        try:
+            self._post("tasks", [{
+                "entity_id"    : lead_id,
+                "entity_type"  : "leads",
+                "task_type_id" : 1,
+                "text"         : texto,
+                "complete_till": int(time.time()) + prazo_segundos,
+            }])
+        except Exception as e:
+            logger.error(f"add_task lead {lead_id}: {e}")
+
     def mark_duplicate(self, lead_novo_id: int, lead_original_id: int) -> None:
         """
         Marca lead recém-criado como duplicata de um lead ativo existente

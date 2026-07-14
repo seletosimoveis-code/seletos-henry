@@ -410,6 +410,30 @@ async def _process_message_inner(
 
         lead_ctx = await asyncio.to_thread(kommo.get_lead_context, phone)
 
+        # ── CLIENTE DA CASA (contrato ganho): robôs NÃO atendem ────────────────
+        # Regra do Felipe (11/07, caso Renato): cliente com negócio fechado que
+        # escreve fala com HUMANO. O bot acolhe UMA vez, aciona a equipe e
+        # silencia — mesmo que Gabriel/Henry tenham estado ativo na memória.
+        if lead_ctx.get("cliente_ativo"):
+            gabriel.set_human_mode(phone)
+            henry.set_human_mode(phone)
+            followup.cancel(phone)
+            acolhida = (
+                "Olá! 😊 Como você já é cliente da casa, quem cuida do seu retorno "
+                "é diretamente nossa equipe. Já avisei aqui — te respondem em breve!"
+            )
+            henry.record_outgoing(phone, acolhida)
+            await asyncio.to_thread(zapi.send_text, phone, acolhida)
+            lead_id_ca = lead_ctx.get("id")
+            if lead_id_ca:
+                asyncio.create_task(asyncio.to_thread(
+                    kommo.add_task, lead_id_ca,
+                    f"🔔 Cliente da casa escreveu no WhatsApp: \"{text[:120]}\" — responder pessoalmente.",
+                    3600,
+                ))
+            logger.info(f"[{phone}] Cliente da casa — acolhido 1x, equipe acionada, bots silenciados")
+            return
+
         # ── Lead retornando — Gabriel reativação automática ───────────────────
         # Condições para detectar retorno (todas devem ser verdadeiras):
         #   1. Gabriel não está ativo para este número
