@@ -61,6 +61,13 @@ _msg_buffer:  dict[str, list[str]]   = {}
 _buffer_task: dict[str, asyncio.Task] = {}
 _buffer_name: dict[str, str]          = {}
 
+# Marcador de posse do caminho REATIVO (caso Jô, 12/07): quando uma mensagem
+# chega pelo Z-API, o caminho reativo é DONO da conversa pelos próximos 90s —
+# a ativação proativa via Kommo (message[add]/leads[add]) fica dispensada,
+# mesmo que o histórico ainda não exista (debounce + consulta ao CRM atrasam
+# a gravação e reabriam a corrida da dupla saudação).
+_recent_inbound: dict[str, float] = {}
+
 
 async def _debounced_process(phone: str):
     try:
@@ -355,6 +362,13 @@ async def webhook_zapi(request: Request):
     if _is_duplicate_message(phone, text or audio_url):
         logger.warning(f"[{phone}] Mensagem duplicada detectada — ignorando")
         return JSONResponse({"status": "ignored", "reason": "duplicate"})
+
+    # Caminho reativo assume a posse da conversa (bloqueia proativo por 90s)
+    _recent_inbound[phone] = time.time()
+    if len(_recent_inbound) > 500:
+        _corte = time.time() - 3600
+        for _k in [k for k, v in _recent_inbound.items() if v < _corte]:
+            _recent_inbound.pop(_k, None)
 
     # Áudio: processa direto (transcrição não se agrega). Texto: agrega pedaços.
     if audio_url:
@@ -806,6 +820,13 @@ async def activate_henry_for_lead(lead_id: int):
         )
         if not phone:
             logger.warning(f"Lead {lead_id} sem telefone — Henry nao ativado")
+            return
+
+        # ── Posse do caminho reativo (caso Jô, 12/07) ──────────────────────────
+        # Mensagem chegou pelo Z-API há <90s → o caminho reativo é dono da
+        # conversa; a saudação proativa fica dispensada (evita dupla apresentação).
+        if time.time() - _recent_inbound.get(phone, 0) < 90:
+            logger.info(f"[{phone}] Inbound recente via Z-API — ativação proativa dispensada")
             return
 
         # ── Prevenção de duplicatas (padrão Canal Pro, 11/07) ──────────────────
