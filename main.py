@@ -299,6 +299,29 @@ async def webhook_zapi(request: Request):
         _lid_digits = re.sub(r"\D", "", _lid_raw)
         if len(_lid_digits) >= 14 and phone:
             store.set_state(_lid_digits, "lid_map", phone)
+
+            # ── Migra pausa pendente da chave-LID (caso ref-303, 12/07) ────────
+            # Conversa ABERTA pela equipe: o fromMe da Jana chega ANTES de
+            # existir mapa → pausa cai na chave-LID. Na 1ª resposta do cliente,
+            # transferimos a pausa para o número real ANTES de processar —
+            # o bot já encontra a pausa ativa e não atropela a prospecção.
+            _lid_pause = float(_human_pause_until.get(_lid_digits) or 0)
+            try:
+                _lid_pause = max(_lid_pause, float(
+                    store.all_state("pause_until").get(_lid_digits) or 0
+                ))
+            except (TypeError, ValueError):
+                pass
+            if _lid_pause > time.time():
+                _human_pause_until[phone] = _lid_pause
+                store.set_state(phone, "pause_until", _lid_pause)
+                _human_pause_until.pop(_lid_digits, None)
+                store.del_state(_lid_digits, "pause_until")
+                followup.cancel(phone)
+                logger.info(
+                    f"[{phone}] Pausa humana migrada da chave-LID {_lid_digits} "
+                    f"(conversa aberta pela equipe)"
+                )
             break
 
     # Detecta áudio (ptt = Push To Talk = gravação de voz; audio = arquivo de áudio)
