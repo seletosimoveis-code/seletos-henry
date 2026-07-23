@@ -201,6 +201,25 @@ def build_report(semanal: bool = False) -> str:
             "não entram no radar. Rodar retroativo/completar cadastro.",
         ]
 
+    # ── 🎯 Matches E3: demanda × estoque do site (pedido do Felipe 12/07) ─────
+    try:
+        from estoque import run_matching
+        m = run_matching(dry_run=True, batch=20, notificar=False)
+        if m.get("com_match"):
+            linhas += [
+                "",
+                f"🎯 MATCHES NO ESTOQUE: {m['com_match']} cliente(s) da DEmanda têm "
+                f"imóvel compatível no site AGORA:",
+            ]
+            linhas += [f"   • {p}" for p in m.get("propostas", [])[:8]]
+            if m["com_match"] > 8:
+                linhas.append(f"   … e mais {m['com_match'] - 8}.")
+            linhas.append("   → Avisar clientes: /admin/matching?dry_run=false")
+        elif m.get("status") == "simulação":
+            linhas += ["", "🎯 Matches no estoque: nenhum novo hoje."]
+    except Exception as e:
+        logger.warning(f"radar: matching indisponível: {e}")
+
     linhas += [
         "",
         "💡 Perfil com 3+ clientes = captação com fechamento quase garantido.",
