@@ -217,6 +217,21 @@ class GabrielManager:
             else:
                 logger.info(f"[{phone}] Ref #{ref} não encontrada no site — Gabriel responde sem detalhes")
 
+        # ── E3: OFERTA AO VIVO — imóveis reais do site no contexto ────────────
+        # Com tipo/bairro conhecidos, o Gabriel deixa de mandar link genérico e
+        # passa a OFERTAR 2-3 imóveis específicos (o coração do modelo HeyLeo).
+        try:
+            from estoque import search_for_ctx, format_ofertas
+            ofertas = search_for_ctx(funil, lead_context, user_message)
+            if ofertas:
+                system += "\n\n" + format_ofertas(ofertas)
+                logger.info(
+                    f"[{phone}] E3: {len(ofertas)} imóveis reais injetados "
+                    f"(refs: {', '.join(o['ref'] for o in ofertas)})"
+                )
+        except Exception as e:
+            logger.warning(f"[{phone}] E3 oferta ao vivo indisponível: {e}")
+
         try:
             response = _client.messages.create(
                 model      = GABRIEL_MODEL,

@@ -31,6 +31,7 @@ import followup
 import demandas
 import retroativo
 import faseb
+import estoque
 
 logging.basicConfig(
     level=logging.INFO,
@@ -202,6 +203,8 @@ async def startup():
     retroativo.init(zapi)
     # ── Fase B: revalidação ativa do Gabriel (via /admin/faseb) ────────────────
     faseb.init(gabriel, henry, kommo, zapi, _is_human_paused)
+    # ── E3: motor de oferta (inventário do site + matching DEmanda) ────────────
+    estoque.init(zapi, kommo, _is_human_paused)
 
 
 def _hydrate_state():
@@ -985,6 +988,38 @@ async def admin_retroativo_realocar(batch: int = 20, dry_run: bool = True):
     """
     resultado = await asyncio.to_thread(retroativo.realocar_desalinhados, batch, dry_run)
     return resultado
+
+
+@app.get("/admin/estoque")
+async def admin_estoque(forcar: bool = False):
+    """Inventário do site (cache 45 min). forcar=true recarrega agora."""
+    inv = await asyncio.to_thread(estoque.fetch_inventory, forcar)
+    resumo: dict = {}
+    for it in inv.values():
+        chave = f"{it['finalidade']} · {it['cidade'] or '?'}"
+        resumo[chave] = resumo.get(chave, 0) + 1
+    return {"total": len(inv), "por_secao": resumo,
+            "amostra": list(inv.values())[:8]}
+
+
+@app.get("/admin/buscar")
+async def admin_buscar(finalidade: str = "aluguel", tipo: str = "", cidade: str = "",
+                       bairro: str = "", max_price: int = 0, dorm: int = 0):
+    """Testa a busca que o Gabriel usa ao vivo (E3)."""
+    res = await asyncio.to_thread(
+        estoque.search, finalidade, tipo, cidade, bairro, max_price, dorm, 3
+    )
+    return {"encontrados": len(res), "imoveis": res}
+
+
+@app.api_route("/admin/matching", methods=["GET", "POST"])
+async def admin_matching(dry_run: bool = True, batch: int = 15, notificar: bool = True):
+    """
+    Matching DEmanda × estoque do site. dry_run=true (padrão) só lista os
+    matches. Modo real: Imóveis Potenciais + aviso ao cliente (voz Gabriel,
+    janela seg-sex 8-19h/sáb 8-12h, máx MATCH_MAX_DIA/dia) + tarefa corretor.
+    """
+    return await asyncio.to_thread(estoque.run_matching, dry_run, batch, notificar)
 
 
 @app.api_route("/admin/faseb", methods=["GET", "POST"])
