@@ -344,9 +344,17 @@ def run_matching(dry_run: bool = True, batch: int = 15, notificar: bool = True) 
             continue
         stats["com_match"] += 1
         top = novos[0]
+
+        # Telefone + link direto do lead no Kommo — para a equipe achar o
+        # cliente em 1 clique (melhoria pedida pelo Felipe em 12/07)
+        phone, nome_ctx, _ctx2 = _kommo.get_lead_phone_and_context(lead_id)
+        fone_fmt = phone or "sem fone"
+        link_lead = f"https://{KOMMO_SUBDOMAIN}.kommo.com/leads/detail/{lead_id}"
         propostas.append(
-            f"{lead_id} · {ld.get('name')} ← ref {top['ref']} "
-            f"({top['tipo']} {top['bairro']}, {_fmt_preco(top.get('preco'), top['finalidade'])})"
+            f"{ld.get('name')} · 📱 {fone_fmt}\n"
+            f"     ← ref {top['ref']} ({top['tipo']} {top['bairro']}, "
+            f"{_fmt_preco(top.get('preco'), top['finalidade'])})\n"
+            f"     🔗 {link_lead}"
         )
 
         if dry_run:
@@ -369,13 +377,14 @@ def run_matching(dry_run: bool = True, batch: int = 15, notificar: bool = True) 
 
         _kommo.add_task(
             lead_id,
-            f"🎯 MATCH: ref {top['ref']} casa com este lead — cliente será/foi avisado. Acompanhar!",
+            f"🎯 MATCH: ref {top['ref']} casa com este lead (📱 {fone_fmt}) — "
+            f"cliente será/foi avisado. Acompanhar!",
             14400,
         )
 
         # Notificação ao cliente (voz do Gabriel) — com todas as travas
         if notificar and enviados_hoje < MATCH_MAX_DIA:
-            phone, nome, _ctx2 = _kommo.get_lead_phone_and_context(lead_id)
+            nome = nome_ctx
             if phone and not is_equipe_phone(phone) and not (_is_paused_fn and _is_paused_fn(phone)):
                 primeiro = (nome or "").split("|")[0].split()[0].title() if nome else ""
                 desc = f"{(top['tipo'] or 'imóvel').title()}"
