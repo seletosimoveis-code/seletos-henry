@@ -32,6 +32,7 @@ from datetime import datetime, timezone, timedelta
 from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY
 from kommo import is_equipe_phone, get_pipe_captacao
+from agent import EQUIPE_TAG
 import store
 
 logger  = logging.getLogger(__name__)
@@ -58,11 +59,28 @@ _is_paused_fn = None
 
 # ─── Registro de atividade (chamado pelo main.py) ─────────────────────────────
 
-def record_client_activity(phone: str) -> None:
-    """Cliente falou → zera o ciclo de follow-up."""
+def record_client_activity(phone: str, paused: bool = False) -> None:
+    """
+    Cliente falou → zera o ciclo de follow-up.
+
+    paused=True (pausa humana ativa) → o cliente está falando COM UM CORRETOR.
+    Não re-armamos o ciclo: quem responde é o humano. Caso contrário o toque 1
+    vencia exatamente junto com a pausa (ambos 4h) e o bot reabria a conversa
+    poucos minutos depois de o corretor encerrá-la (caso Jucy, 24/07 14:51).
+    """
     try:
+        if paused:
+            fu = store.all_state("fu").get(phone)
+            if isinstance(fu, dict) and fu.get("human_owned"):
+                return
+            store.set_state(phone, "fu", {
+                "last_user_ts": time.time(), "touches": 0, "last_touch_ts": 0,
+                "done": False, "human_owned": True,
+            })
+            return
         store.set_state(phone, "fu", {
-            "last_user_ts": time.time(), "touches": 0, "last_touch_ts": 0, "done": False,
+            "last_user_ts": time.time(), "touches": 0, "last_touch_ts": 0,
+            "done": False, "human_owned": False,
         })
     except Exception as e:
         logger.warning(f"[{phone}] followup record falhou: {e}")
@@ -71,6 +89,24 @@ def record_client_activity(phone: str) -> None:
 def cancel(phone: str) -> None:
     """Humano assumiu / handoff / reset → follow-up deste ciclo é cancelado."""
     store.del_state(phone, "fu")
+
+
+def mark_human_owned(phone: str) -> None:
+    """
+    Marca a conversa como propriedade do corretor humano.
+
+    A posse só é devolvida ao bot quando o cliente escrever DEPOIS de a pausa
+    humana terminar (main.py). Enquanto durar, nenhum toque automático sai —
+    é o que impede o bot de reabrir um assunto que o humano já fechou.
+    """
+    try:
+        store.set_state(phone, "fu", {
+            "last_user_ts": time.time(), "touches": 0, "last_touch_ts": 0,
+            "done": False, "human_owned": True,
+        })
+        logger.info(f"[{phone}] Conversa marcada como atendimento humano — follow-up suspenso")
+    except Exception as e:
+        logger.warning(f"[{phone}] mark_human_owned falhou: {e}")
 
 
 # ─── Janela de envio ──────────────────────────────────────────────────────────
@@ -111,10 +147,18 @@ _FU_INSTRUCTIONS = {
 def _generate_message(history: list[dict], touch: int, bot_name: str) -> str:
     """Gera o toque com contexto da conversa; template como fallback."""
     try:
-        transcript = "\n".join(
-            f"{'Cliente' if m['role'] == 'user' else bot_name}: {m['content']}"
-            for m in history[-12:]
-        )
+        linhas = []
+        for m in history[-12:]:
+            if m["role"] == "user":
+                linhas.append(f"Cliente: {m['content']}")
+            elif m["content"].strip().startswith(EQUIPE_TAG):
+                # Fala de um CORRETOR humano — precisa ficar explícito, senão o
+                # modelo assume que foi ele quem disse e inverte os papéis.
+                texto = m["content"].strip()[len(EQUIPE_TAG):].strip()
+                linhas.append(f"Corretor(a) da equipe: {texto}")
+            else:
+                linhas.append(f"{bot_name}: {m['content']}")
+        transcript = "\n".join(linhas)
         resp = _client.messages.create(
             model      = HAIKU_MODEL,
             max_tokens = 200,
@@ -122,8 +166,24 @@ def _generate_message(history: list[dict], touch: int, bot_name: str) -> str:
                 f"Você é {bot_name} da Seletos Imóveis retomando contato com um cliente "
                 f"que parou de responder no WhatsApp. {_FU_INSTRUCTIONS[touch]} "
                 "Escreva SOMENTE a mensagem, sem aspas, sem explicações. "
-                "Português brasileiro, tuteando, no máximo 1 emoji. "
-                "NUNCA invente imóveis, preços ou disponibilidade."
+                "Português brasileiro, tuteando, no máximo 1 emoji.\n"
+                "REGRAS INVIOLÁVEIS:\n"
+                "1. NUNCA invente imóveis, preços ou disponibilidade.\n"
+                "2. NUNCA invente um motivo, acontecimento ou circunstância que "
+                "não esteja LITERALMENTE escrito na conversa (chuva, trânsito, "
+                "viagem, imprevisto). Se não está no texto, não existe.\n"
+                "3. Preste atenção em QUEM disse cada coisa. 'Corretor(a) da "
+                "equipe' é uma pessoa da Seletos, não é você e não é o cliente. "
+                "Um impedimento do corretor JAMAIS pode ser atribuído ao cliente.\n"
+                "4. NUNCA marque, confirme nem sugira data, horário ou endereço "
+                "de visita — agendamento é exclusivo de um corretor humano. "
+                "Se o assunto for visita, apenas pergunte a disponibilidade e "
+                "diga que um corretor confirma.\n"
+                "5. Se o cliente já disse que NÃO pode, não estará disponível ou "
+                "desistiu, respeite: não insista no mesmo horário nem reafirme "
+                "combinados que ele acabou de recusar.\n"
+                "6. Se a conversa foi encerrada por um corretor humano ou já "
+                "chegou a uma conclusão, seja breve e não reabra o assunto."
             ),
             messages   = [{"role": "user", "content": f"CONVERSA ATÉ AGORA:\n{transcript}"}],
         )
@@ -152,6 +212,11 @@ async def _check_once() -> None:
                 cancel(phone)
                 continue
             if not isinstance(fu, dict) or fu.get("done"):
+                continue
+            # Conversa em posse de um corretor humano → nenhum toque automático.
+            # Só o cliente escrevendo APÓS o fim da pausa devolve a conversa ao
+            # bot (main.py). Trava do caso Jucy (24/07).
+            if fu.get("human_owned"):
                 continue
             touches = int(fu.get("touches", 0))
             due_h   = _due_hours(touches)

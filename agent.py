@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 # Detecta tag de handoff no texto do Claude
 _HANDOFF_RE = re.compile(r"\[HANDOFF:\s*([^\]]+)\]", re.IGNORECASE)
 
+# Marcador de mensagem escrita por um CORRETOR humano (evento fromMe).
+# Sem ele o modelo lê a fala da equipe como se fosse dele mesmo e inverte
+# os papéis ao retomar a conversa. Importado por gabriel/agent.py, main.py
+# (anti-eco) e followup.py (montagem do transcript).
+EQUIPE_TAG = "[EQUIPE]"
+
 # Estado em memória — cache de leitura; SQLite (store.py) é o backup durável
 _conversations: dict[str, list[dict]] = {}
 _human_mode:    set[str]              = set()
@@ -147,17 +153,27 @@ class AgentManager:
         logger.info(f"[{phone}] Henry ativado proativamente ({len(clean)} chars)")
         return clean
 
-    def record_outgoing(self, phone: str, text: str):
+    def record_outgoing(self, phone: str, text: str, by_human: bool = False):
         """
-        Registra mensagem enviada por humano (atendente) como turno do assistente.
-        Henry aprende o que foi dito sem gerar nova resposta.
+        Registra mensagem saída como turno do assistente.
+
+        by_human=True → mensagem digitada por um CORRETOR da equipe (fromMe).
+        Nesse caso o conteúdo recebe o marcador EQUIPE_TAG, porque o papel
+        "assistant" sozinho fazia o modelo achar que ELE tinha dito aquilo.
+
+        Caso real 24/07 (Jucy): a corretora escreveu "estou de moto / acho
+        perigoso sair de moto"; sem marcador o histórico virou "Henry: estou de
+        moto" e o follow-up devolveu "conseguiu sair da chuva?" ao CLIENTE —
+        invertendo quem estava impedido de ir à visita.
         """
+        content = f"{EQUIPE_TAG} {text}" if by_human else text
         history = _conversations.setdefault(phone, [])
-        history.append({"role": "assistant", "content": text})
-        store.append_msg("henry", phone, "assistant", text)
+        history.append({"role": "assistant", "content": content})
+        store.append_msg("henry", phone, "assistant", content)
         if len(history) > MAX_HISTORY:
             _conversations[phone] = history[-MAX_HISTORY:]
-        logger.info(f"[{phone}] Mensagem humana registrada no histórico Henry ({len(text)} chars)")
+        origem = "humana (equipe)" if by_human else "do bot"
+        logger.info(f"[{phone}] Mensagem {origem} registrada no histórico Henry ({len(text)} chars)")
 
     def reset_conversation(self, phone: str):
         """Reinicia a conversa de um número (ex: novo atendimento)."""

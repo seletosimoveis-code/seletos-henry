@@ -15,14 +15,15 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from agent import AgentManager, hydrate_from_store as henry_hydrate
+from agent import AgentManager, EQUIPE_TAG, hydrate_from_store as henry_hydrate
 from audio import transcribe_audio_url
 from gabriel.agent import GabrielManager, PIPE_TO_FUNIL, hydrate_from_store as gabriel_hydrate
 import store
 from zapi import ZAPIClient
 from kommo import (
     KommoClient, canon_phone, is_equipe_phone,
-    PIPE_ALUGUEL, PIPE_AVULSO,
+    PIPE_ALUGUEL, PIPE_AVULSO, PIPE_RECEPCAO,
+    STATUS_GANHO, STATUS_PERDIDO,
     get_pipe_captacao, get_pipe_lancamentos, get_pipe_investidor,
 )
 from config import RATE_LIMIT_MAX_PER_MIN, HENRY_MAX_LEAD_AGE_HOURS
@@ -147,14 +148,22 @@ def _is_bot_echo(phone: str, text: str) -> bool:
         return False
     t = text.strip()
 
+    def _ultimo_igual(hist: list) -> bool:
+        if not hist or hist[-1]["role"] != "assistant":
+            return False
+        # Turnos da equipe carregam EQUIPE_TAG no conteúdo — remover antes de
+        # comparar, senão o eco deixa de ser reconhecido e vira pausa fantasma.
+        conteudo = hist[-1]["content"].strip()
+        if conteudo.startswith(EQUIPE_TAG):
+            conteudo = conteudo[len(EQUIPE_TAG):].strip()
+        return conteudo == t
+
     # Verifica Gabriel (tem prioridade — pode estar ativo com Henry em human mode)
-    g_hist = gabriel.get_history(phone)
-    if g_hist and g_hist[-1]["role"] == "assistant" and g_hist[-1]["content"].strip() == t:
+    if _ultimo_igual(gabriel.get_history(phone)):
         return True
 
     # Verifica Henry
-    h_hist = henry.get_history(phone)
-    if h_hist and h_hist[-1]["role"] == "assistant" and h_hist[-1]["content"].strip() == t:
+    if _ultimo_igual(henry.get_history(phone)):
         return True
 
     return False
@@ -428,8 +437,11 @@ async def _process_message_inner(
 
     logger.info(f"[{phone}] Mensagem: {text[:80]}")
 
-    # Cliente falou → zera o ciclo de follow-up automático
-    followup.record_client_activity(phone)
+    # Cliente falou → zera o ciclo de follow-up automático.
+    # Se há pausa humana ativa, o cliente está conversando com um CORRETOR:
+    # o ciclo fica em posse do humano e nenhum toque é armado. A posse só volta
+    # ao bot quando o cliente escreve com a pausa já vencida (aqui, paused=False).
+    followup.record_client_activity(phone, paused=_is_human_paused(phone))
     try:
         # Gabriel ativo: só bloqueia se Gabriel estiver em modo humano
         if gabriel.is_active(phone):
@@ -651,17 +663,23 @@ async def record_outgoing_message(phone: str, text: str):
             logger.debug(f"[{phone}] fromMe é eco do bot — ignorado sem pausar")
             return
 
-        # Registra no histórico do bot ativo para preservar contexto da conversa
+        # Registra no histórico do bot ativo para preservar contexto da conversa.
+        # by_human=True → marca o turno como fala da EQUIPE (caso Jucy 24/07).
         if gabriel.is_active(phone) and not gabriel.is_human_mode(phone):
-            gabriel.record_outgoing(phone, text)
+            gabriel.record_outgoing(phone, text, by_human=True)
         elif not henry.is_human_mode(phone):
-            henry.record_outgoing(phone, text)
+            henry.record_outgoing(phone, text, by_human=True)
 
         # Ativa a pausa automática com auto-expiração
         resume_ts = _calc_resume_timestamp(time.time())
         _human_pause_until[phone] = resume_ts
         store.set_state(phone, "pause_until", resume_ts)
-        followup.cancel(phone)   # humano assumiu → follow-up do bot cancelado
+        # Humano assumiu → follow-up cancelado E a conversa passa a ser DELE.
+        # Sem a posse, as respostas do cliente durante o atendimento humano
+        # re-armavam o ciclo e o toque 1 (4h) vencia junto com a pausa (4h) —
+        # o bot reabria toda conversa que um humano tinha acabado de encerrar.
+        followup.cancel(phone)
+        followup.mark_human_owned(phone)
         resume_dt = datetime.fromtimestamp(resume_ts, tz=_BR_TZ)
         logger.info(
             f"[{phone}] Intervenção humana detectada — bot pausado até "
@@ -811,11 +829,16 @@ async def activate_henry_for_contact(contact_id: int):
         logger.error(f"Erro ao ativar Henry para contact {contact_id}: {e}", exc_info=True)
 
 
-async def activate_henry_for_lead(lead_id: int):
+async def activate_henry_for_lead(lead_id: int, max_idade_h: float | None = None):
     """
     Ativa Henry proativamente quando novo lead chega no Kommo via qualquer canal
     (OLX/Canal Pro, Instagram, Facebook, formulário web — sem WhatsApp direto).
+
+    max_idade_h: sobrepõe HENRY_MAX_LEAD_AGE_HOURS. Usado pelo resgate manual da
+    Recepção (/admin/recepcao/resgatar), onde o lead é antigo DE PROPÓSITO —
+    ficou parado justamente porque a ativação automática falhou.
     """
+    limite_idade = HENRY_MAX_LEAD_AGE_HOURS if max_idade_h is None else max_idade_h
     try:
         await asyncio.sleep(5)   # aguarda WebConnect/KWID finalizar enriquecimento
         phone, name, lead_ctx = await asyncio.to_thread(
@@ -858,10 +881,10 @@ async def activate_henry_for_lead(lead_id: int):
         # Evita que um restart do Railway reative o Henry em leads já atendidos
         created_at  = lead_ctx.get("created_at", 0)
         lead_age_h  = (time.time() - created_at) / 3600 if created_at else 0
-        if lead_age_h > HENRY_MAX_LEAD_AGE_HOURS:
+        if lead_age_h > limite_idade:
             logger.info(
                 f"[{phone}] Lead {lead_id} tem {lead_age_h:.1f}h — "
-                f"acima do limite de {HENRY_MAX_LEAD_AGE_HOURS}h para ativação proativa. Ignorando."
+                f"acima do limite de {limite_idade}h para ativação proativa. Ignorando."
             )
             return
 
@@ -977,6 +1000,75 @@ async def admin_duplicados():
     o merge é feito na interface do Kommo. Demora ~1-2 min (varre contatos).
     """
     return await asyncio.to_thread(retroativo.relatorio_duplicados)
+
+
+@app.api_route("/admin/recepcao/resgatar", methods=["GET", "POST"])
+async def admin_recepcao_resgatar(
+    batch: int = 20, dry_run: bool = True, max_dias: int = 7
+):
+    """
+    Rede de segurança da Recepção — leads que entraram e nunca foram atendidos.
+
+    Motivo: leads de portal (Canal Pro/OLX) chegam pelo webhook do Kommo, mas
+    quando o evento leads[add] não vem (só a nota de origem), ou quando o canal
+    de saída está fora do ar, o Henry nunca é ativado. O lead fica no balcão sem
+    score e sem tarefa. Em 27-30/07 isso somou 33 leads em 4 dias.
+
+    Esta varredura pega o que escapou: lead ativo na Recepção, com telefone,
+    criado nos últimos `max_dias`, sem histórico de bot, sem pausa/modo humano.
+
+    dry_run=true (padrão) apenas LISTA. Rode o dry primeiro, sempre.
+    """
+    def _candidatos() -> list[dict]:
+        leads = retroativo._paginate_leads(
+            {"filter[pipeline_id]": PIPE_RECEPCAO},
+            keep=lambda ld: ld.get("status_id") not in (STATUS_GANHO, STATUS_PERDIDO),
+        )
+        limite = time.time() - max_dias * 86400
+        return [ld for ld in leads if (ld.get("created_at") or 0) >= limite]
+
+    candidatos = await asyncio.to_thread(_candidatos)
+
+    elegiveis, ignorados = [], {"sem_telefone": 0, "ja_atendido": 0, "equipe": 0}
+    for ld in candidatos:
+        phone, nome, _ctx = await asyncio.to_thread(
+            kommo.get_lead_phone_and_context, ld["id"]
+        )
+        if not phone:
+            ignorados["sem_telefone"] += 1
+            continue
+        if is_equipe_phone(phone):
+            ignorados["equipe"] += 1
+            continue
+        if (henry.get_history(phone) or gabriel.is_active(phone)
+                or henry.is_human_mode(phone) or gabriel.is_human_mode(phone)
+                or _is_human_paused(phone)):
+            ignorados["ja_atendido"] += 1
+            continue
+        elegiveis.append({"lead_id": ld["id"], "nome": nome or ld.get("name"),
+                          "phone": phone, "created_at": ld.get("created_at")})
+
+    elegiveis.sort(key=lambda e: e["created_at"] or 0, reverse=True)
+    lote = elegiveis[:batch]
+
+    if dry_run:
+        return {"dry_run": True, "candidatos_na_recepcao": len(candidatos),
+                "elegiveis": len(elegiveis), "ignorados": ignorados,
+                "lote_que_seria_ativado": lote}
+
+    ativados = 0
+    for item in lote:
+        # max_idade_h generoso: estes leads são antigos justamente porque a
+        # ativação automática falhou — o guard de idade não deve barrá-los.
+        asyncio.create_task(_with_activation_sem(
+            activate_henry_for_lead(item["lead_id"], max_idade_h=max_dias * 24)
+        ))
+        ativados += 1
+        await asyncio.sleep(1.5)   # respiro entre ativações
+
+    logger.info(f"[recepcao/resgatar] {ativados} leads reenviados ao Henry")
+    return {"dry_run": False, "elegiveis": len(elegiveis),
+            "ativados": ativados, "ignorados": ignorados, "lote": lote}
 
 
 @app.api_route("/admin/retroativo/realocar", methods=["GET", "POST"])

@@ -17,6 +17,7 @@ from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, GABRIEL_MODEL, MAX_HISTORY, GABRIEL_MAX_TURNS
 from gabriel.prompts import get_prompt
 from site_seletos import fetch_imovel_details, extract_ref_from_text
+from agent import EQUIPE_TAG
 import store
 
 # Fuso de Brasília: UTC-3 fixo (Brasil não usa horário de verão desde 2019)
@@ -291,16 +292,22 @@ class GabrielManager:
     def get_history(self, phone: str) -> list[dict]:
         return _gabriel_conversations.get(phone, [])
 
-    def record_outgoing(self, phone: str, text: str):
+    def record_outgoing(self, phone: str, text: str, by_human: bool = False):
         """
-        Registra mensagem enviada por humano como turno do assistente no contexto Gabriel.
+        Registra mensagem saída como turno do assistente no contexto Gabriel.
+
+        by_human=True → escrita por um CORRETOR da equipe: recebe EQUIPE_TAG
+        para o modelo não confundir a fala do humano com a sua própria
+        (ver agent.py, caso Jucy 24/07).
         """
+        content = f"{EQUIPE_TAG} {text}" if by_human else text
         history = _gabriel_conversations.setdefault(phone, [])
-        history.append({"role": "assistant", "content": text})
-        store.append_msg("gabriel", phone, "assistant", text)
+        history.append({"role": "assistant", "content": content})
+        store.append_msg("gabriel", phone, "assistant", content)
         if len(history) > MAX_HISTORY:
             _gabriel_conversations[phone] = history[-MAX_HISTORY:]
-        logger.info(f"[{phone}] Mensagem humana registrada no histórico Gabriel ({len(text)} chars)")
+        origem = "humana (equipe)" if by_human else "do bot"
+        logger.info(f"[{phone}] Mensagem {origem} registrada no histórico Gabriel ({len(text)} chars)")
 
     def reactivate(self, phone: str, funil: str) -> None:
         """
