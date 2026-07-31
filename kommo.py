@@ -878,7 +878,14 @@ class KommoClient:
         Marca lead recém-criado como duplicata de um lead ativo existente
         (padrão Canal Pro: portal cria lead novo para contato que já tem lead).
         Cria nota + tarefa para a equipe fundir na interface do Kommo.
+        UMA VEZ POR LEAD — sem esta trava, eventos repetidos do Kommo geravam
+        dezenas de tarefas idênticas (caso #22557290, 30 tarefas, 30/07).
         """
+        import store as _store
+        if _store.all_state("dup_marcado").get(str(lead_novo_id)):
+            logger.info(f"Lead {lead_novo_id} já marcado como duplicata — ignorando repetição")
+            return
+        _store.set_state(str(lead_novo_id), "dup_marcado", lead_original_id)
         try:
             self._post("leads/notes", [{
                 "entity_id"  : lead_novo_id,
