@@ -171,3 +171,12 @@ def all_state(key: str) -> dict[str, object]:
 def clear_phone_state(phone: str, keys: list[str]) -> None:
     for k in keys:
         del_state(phone, k)
+
+
+def recent_messages(days: int = 7) -> list[tuple]:
+    """Mensagens dos últimos N dias (para a rotina de aprendizado contínuo)."""
+    cutoff = time.time() - days * 86400
+    return _query(
+        "SELECT bot, phone, role, content, ts FROM messages WHERE ts>? ORDER BY phone, id",
+        (cutoff,),
+    )

@@ -33,6 +33,7 @@ import demandas
 import retroativo
 import faseb
 import estoque
+import alertas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -214,6 +215,8 @@ async def startup():
     faseb.init(gabriel, henry, kommo, zapi, _is_human_paused)
     # ── E3: motor de oferta (inventário do site + matching DEmanda) ────────────
     estoque.init(zapi, kommo, _is_human_paused)
+    # ── Alertas em tempo real (Jana geral / Sr. Hygino Assú) ───────────────────
+    alertas.init(zapi)
 
 
 def _hydrate_state():
@@ -540,6 +543,10 @@ async def _process_message_inner(
                     await asyncio.to_thread(
                         kommo.update_lead_after_gabriel, phone, history_ret, handoff_ret, funil_ret, score_ret
                     )
+                    # Alerta tempo-real ao corretor (quente/visita/humano)
+                    if handoff_ret in ("VISITA", "URGENTE", "SOLICITADO") or score_ret == "quente":
+                        evento = handoff_ret if handoff_ret in ("VISITA", "URGENTE", "SOLICITADO") else "quente"
+                        alertas.enviar(evento, lead_ctx, phone, f"Funil: {funil_ret}")
                     gabriel.set_human_mode(phone)
                     asyncio.create_task(asyncio.to_thread(
                         enrich_lead_crm, phone, lead_id_ret, [], history_ret
@@ -563,6 +570,10 @@ async def _process_message_inner(
                 await asyncio.to_thread(
                     kommo.update_lead_after_gabriel, phone, history, handoff, funil, score
                 )
+                # Alerta tempo-real ao corretor (quente/visita/humano)
+                if handoff in ("VISITA", "URGENTE", "SOLICITADO") or score == "quente":
+                    evento = handoff if handoff in ("VISITA", "URGENTE", "SOLICITADO") else "quente"
+                    alertas.enviar(evento, lead_ctx, phone, f"Funil: {funil}")
                 gabriel.set_human_mode(phone)
 
                 # Enriquecimento silencioso do CRM (Leo AiRM)
@@ -633,6 +644,9 @@ async def _process_message_inner(
                 asyncio.create_task(asyncio.to_thread(
                     enrich_lead_crm, phone, lead_id_henry, history, []
                 ))
+                # Alerta tempo-real: gente esperando HUMANO não pode virar tarefa esquecida
+                if handoff in ("URGENTE", "SOLICITADO", "SUPORTE", "JURIDICO"):
+                    alertas.enviar(handoff, lead_ctx, phone, "Origem: triagem do Henry")
 
     except Exception as e:
         logger.error(f"[{phone}] Erro: {e}", exc_info=True)
@@ -1080,6 +1094,25 @@ async def admin_retroativo_realocar(batch: int = 20, dry_run: bool = True):
     """
     resultado = await asyncio.to_thread(retroativo.realocar_desalinhados, batch, dry_run)
     return resultado
+
+
+@app.get("/admin/transcripts")
+async def admin_transcripts(dias: int = 7):
+    """
+    Conversas dos robôs dos últimos N dias (aprendizado contínuo).
+    Consumido pela rotina semanal que analisa qualidade e sugere ajustes de prompt.
+    """
+    rows = await asyncio.to_thread(store.recent_messages, dias)
+    convs: dict = {}
+    for bot, ph, role, content, ts in rows:
+        c = convs.setdefault(ph, {"phone": ph, "bots": set(), "msgs": []})
+        c["bots"].add(bot)
+        c["msgs"].append({"de": "cliente" if role == "user" else bot, "texto": (content or "")[:400]})
+    dados = [
+        {"phone": c["phone"], "bots": sorted(c["bots"]), "mensagens": c["msgs"][-40:]}
+        for c in list(convs.values())[:80]
+    ]
+    return {"dias": dias, "conversas": len(dados), "dados": dados}
 
 
 @app.get("/admin/estoque")
