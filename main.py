@@ -33,6 +33,7 @@ import demandas
 import retroativo
 import faseb
 import estoque
+import parceiros
 import alertas
 
 logging.basicConfig(
@@ -215,6 +216,8 @@ async def startup():
     faseb.init(gabriel, henry, kommo, zapi, _is_human_paused)
     # ── E3: motor de oferta (inventário do site + matching DEmanda) ────────────
     estoque.init(zapi, kommo, _is_human_paused)
+    # ── EDUARDO E2: varredura de parceiros (backoffice — nunca fala com cliente)
+    parceiros.init(kommo)
     # ── Alertas em tempo real (Jana geral / Sr. Hygino Assú) ───────────────────
     alertas.init(zapi)
 
@@ -862,6 +865,12 @@ async def activate_henry_for_lead(lead_id: int, max_idade_h: float | None = None
             logger.warning(f"Lead {lead_id} sem telefone — Henry nao ativado")
             return
 
+        # Números da equipe: nenhum robô interage — também no caminho Kommo
+        # (anomalia 31/07: lead interno "Equipe | Felipe" recebia handoffs)
+        if is_equipe_phone(phone):
+            logger.info(f"[{phone}] Número da equipe (via Kommo) — Henry não ativado")
+            return
+
         # ── Posse do caminho reativo (caso Jô, 12/07) ──────────────────────────
         # Mensagem chegou pelo Z-API há <90s → o caminho reativo é dono da
         # conversa; a saudação proativa fica dispensada (evita dupla apresentação).
@@ -927,6 +936,9 @@ async def activate_gabriel_for_lead(lead_id: int, pipeline_id: int, funil: str):
         )
         if not phone:
             logger.warning(f"Lead {lead_id} sem telefone — Gabriel nao ativado")
+            return
+        if is_equipe_phone(phone):
+            logger.info(f"[{phone}] Número da equipe (via Kommo) — Gabriel não ativado")
             return
         if gabriel.is_human_mode(phone) or gabriel.is_active(phone):
             logger.info(f"[{phone}] Bot ja ativo — nao reativa Gabriel")
@@ -1152,6 +1164,24 @@ async def admin_matching(dry_run: bool = True, batch: int = 15, notificar: bool 
     janela seg-sex 8-19h/sáb 8-12h, máx MATCH_MAX_DIA/dia) + tarefa corretor.
     """
     return await asyncio.to_thread(estoque.run_matching, dry_run, batch, notificar)
+
+
+@app.api_route("/admin/parceiros", methods=["GET", "POST"])
+async def admin_parceiros(dry_run: bool = True, batch: int = 20,
+                          refresh: bool = False, parceiro: str = ""):
+    """
+    EDUARDO E2 — varredura de parceiros × DEmanda. refresh=true refaz o
+    inventário agora (demora: ~19 sites); parceiro=nome varre só um site.
+    dry_run=true (padrão) lista os matches. Modo real: Imóveis Potenciais +
+    tarefa 🤝 para HUMANO validar a parceria. NUNCA notifica o cliente.
+    """
+    if refresh:
+        inv = await asyncio.to_thread(parceiros.fetch_inventory, True, parceiro)
+        por_fonte: dict = {}
+        for it in inv.values():
+            por_fonte[it["fonte"]] = por_fonte.get(it["fonte"], 0) + 1
+        return {"inventario": len(inv), "por_parceiro": por_fonte}
+    return await asyncio.to_thread(parceiros.run_matching, dry_run, batch)
 
 
 @app.api_route("/admin/faseb", methods=["GET", "POST"])

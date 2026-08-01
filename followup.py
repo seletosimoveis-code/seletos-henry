@@ -144,7 +144,30 @@ _FU_INSTRUCTIONS = {
 }
 
 
-def _generate_message(history: list[dict], touch: int, bot_name: str) -> str:
+_META_WORDS = ("toque", "henry", "gabriel", "respondendo", "mensagem",
+               "follow", "você", "voce", "cliente:")
+
+
+def _sanitize(msg: str) -> str:
+    """
+    Trava anti-andaime (auditoria 31/07): o modelo vazou o prefixo do prompt
+    para o cliente ("Henry (você) respondendo como terceiro e último toque:").
+    Se a primeira linha tiver ':' e o trecho antes dele contiver palavra-meta,
+    descarta o prefixo.
+    """
+    msg = msg.strip().strip('"').strip()
+    primeira, sep, resto = msg.partition("\n")
+    linha = primeira
+    if ":" in linha:
+        prefixo, _, depois = linha.partition(":")
+        if any(w in prefixo.lower() for w in _META_WORDS) and depois.strip():
+            linha = depois.strip()
+            msg = linha + (("\n" + resto) if sep else "")
+    return msg.strip()
+
+
+def _generate_message(history: list[dict], touch: int, bot_name: str,
+                      prev_text: str = "") -> str:
     """Gera o toque com contexto da conversa; template como fallback."""
     try:
         linhas = []
@@ -183,13 +206,23 @@ def _generate_message(history: list[dict], touch: int, bot_name: str) -> str:
                 "desistiu, respeite: não insista no mesmo horário nem reafirme "
                 "combinados que ele acabou de recusar.\n"
                 "6. Se a conversa foi encerrada por um corretor humano ou já "
-                "chegou a uma conclusão, seja breve e não reabra o assunto."
+                "chegou a uma conclusão, seja breve e não reabra o assunto.\n"
+                "7. A sua saída é EXCLUSIVAMENTE o texto que o cliente vai ler "
+                "no WhatsApp. PROIBIDO qualquer prefixo, rótulo, nome do robô, "
+                "número do toque ou meta-comentário (ex: 'Henry respondendo "
+                "como terceiro toque:'). Nada antes da mensagem.\n"
+                "8. Cada toque deve ser TEXTUALMENTE DIFERENTE dos anteriores "
+                "na conversa — nunca repita uma retomada já enviada."
             ),
             messages   = [{"role": "user", "content": f"CONVERSA ATÉ AGORA:\n{transcript}"}],
         )
-        msg = resp.content[0].text.strip()
+        msg = _sanitize(resp.content[0].text)
         import custos
         custos.registrar("followup", HAIKU_MODEL, resp.usage)
+        # Trava anti-repetição (auditoria 31/07: par de toques idênticos)
+        if prev_text and msg.strip().lower() == prev_text.strip().lower():
+            logger.warning("followup: toque idêntico ao anterior — usando template")
+            return _TEMPLATES[touch].format(nome="")
         if 10 <= len(msg) <= 500:
             return msg
     except Exception as e:
@@ -264,7 +297,10 @@ async def _check_once() -> None:
                 continue
 
             touch = touches + 1
-            msg = await asyncio.to_thread(_generate_message, history, touch, bot_name)
+            msg = await asyncio.to_thread(
+                _generate_message, history, touch, bot_name,
+                str(fu.get("last_text") or ""),
+            )
 
             # Registra ANTES de enviar (convenção anti-eco: o fromMe ecoado
             # precisa já estar como último turno do assistente no histórico)
@@ -274,6 +310,7 @@ async def _check_once() -> None:
                 "last_user_ts" : fu.get("last_user_ts", now),
                 "touches"      : touch,
                 "last_touch_ts": now,
+                "last_text"    : msg,
                 "done"         : touch >= 3,
             })
             logger.info(f"[{phone}] Follow-up {touch}/3 enviado ({bot_name}): {msg[:60]}")

@@ -66,6 +66,7 @@ CONVERSA:
 Retorne exatamente este JSON preenchido:
 {{
   "interesse": null,
+  "nome_cliente": null,
   "tipo_imovel": null,
   "dormitorios": null,
   "bairro": null,
@@ -89,6 +90,8 @@ Retorne exatamente este JSON preenchido:
 Guia de preenchimento:
 - interesse: intenção do cliente na transação: "alugar" | "comprar" | "vender"
   (proprietário oferecendo imóvel para venda/locação pela imobiliária) | null se incerto
+- nome_cliente: primeiro nome (ou nome completo) do CLIENTE, apenas se ele mesmo
+  se apresentou ou foi chamado pelo nome e confirmou. null se não aparecer.
 - tipo_imovel: "casa" | "apartamento" | "studio" | "kitnet" | "loft" | "sobrado" (null se não mencionou)
 - dormitorios: número inteiro como string "0" (kitnet/studio), "1", "2", "3", "4" (4+ quartos)
   Se cliente disse "2 ou 3", use "2". Kitnet/studio/loft sem quartos → "0"
@@ -139,9 +142,9 @@ Não inclua suposições ou inferências.
 # HELPERS KOMMO
 # =============================================================================
 
-def _fetch_filled_fields(lead_id: int) -> tuple[set, int]:
+def _fetch_filled_fields(lead_id: int) -> tuple[set, int, str]:
     """
-    Retorna (set de field_ids já preenchidos, price atual do lead).
+    Retorna (set de field_ids já preenchidos, price atual, nome atual do lead).
     Faz uma única chamada GET para evitar sobrescrever dados existentes.
     """
     try:
@@ -164,10 +167,10 @@ def _fetch_filled_fields(lead_id: int) -> tuple[set, int]:
             if v or eid:
                 filled.add(fid)
         price = int(data.get("price") or 0)
-        return filled, price
+        return filled, price, str(data.get("name") or "")
     except Exception as e:
         logger.error(f"CRM enricher: erro ao buscar campos de lead {lead_id}: {e}")
-        return set(), 0
+        return set(), 0, ""
 
 
 def _patch_lead(lead_id: int, fields_payload: list) -> bool:
@@ -306,8 +309,8 @@ def enrich_lead_crm(
         f"({len(transcript)} chars, Henry={len(henry_history)} msgs, Gabriel={len(gabriel_history)} msgs)"
     )
 
-    # 1. Campos já preenchidos (não serão sobrescritos) + price atual
-    filled_ids, current_price = _fetch_filled_fields(lead_id)
+    # 1. Campos já preenchidos (não serão sobrescritos) + price + nome atuais
+    filled_ids, current_price, lead_name = _fetch_filled_fields(lead_id)
 
     # 2. Extração via LLM
     extracted = _extract_via_llm(transcript)
@@ -330,6 +333,22 @@ def enrich_lead_crm(
 
     # 4b. Orçamento → campo nativo "Valor da venda" (price)
     maybe_set_price(lead_id, extracted, current_price, phone)
+
+    # 4c. Renomeia lead genérico ("Novo Lead - Canal Pro", "Lead #123") com o
+    #     nome real do cliente extraído da conversa (anomalia 31/07: Gabriel
+    #     não conseguia personalizar a abordagem)
+    nome_cli = str(extracted.get("nome_cliente") or "").strip()
+    generico = (not lead_name or lead_name.startswith("Novo Lead")
+                or lead_name.startswith("Lead #"))
+    if nome_cli and len(nome_cli) >= 2 and generico:
+        try:
+            requests.patch(
+                f"{_BASE}/leads/{lead_id}", headers=_hdr(), timeout=10,
+                json={"name": nome_cli.title()[:60]},
+            )
+            logger.info(f"[{phone}] Lead {lead_id} renomeado: '{lead_name}' → '{nome_cli.title()}'")
+        except Exception as e:
+            logger.warning(f"[{phone}] Renomear lead falhou: {e}")
 
     # 5. Preferências comportamentais → nota no Kommo
     apply_preferences_note(phone, lead_id, extracted)

@@ -592,6 +592,30 @@ class KommoClient:
                 lead_movido = True
                 logger.info(f"Lead {lead_id} movido → pipeline {pipe_destino}. Kommo resp: {str(resp)[:120]}")
                 time.sleep(0.2)
+
+                # ── Irmãos na Recepção vão JUNTOS (correção 01/08) ─────────────
+                # Duplicatas do Canal Pro faziam o move acertar o lead-irmão e
+                # deixar o lead DA CONVERSA no balcão (23 tarefas "movido" com
+                # lead parado). Agora nenhum lead ativo do contato fica para trás.
+                try:
+                    norm = _norm_phone(phone)
+                    data_c = self._get("contacts", {"query": norm, "with": "leads", "limit": 3})
+                    for contato in data_c.get("_embedded", {}).get("contacts", []):
+                        for stub in (contato.get("_embedded") or {}).get("leads", []):
+                            sid = stub.get("id")
+                            if not sid or sid == lead_id:
+                                continue
+                            irmao = self._get(f"leads/{sid}")
+                            if (irmao.get("pipeline_id") == PIPE_RECEPCAO
+                                    and irmao.get("status_id") not in (STATUS_GANHO, STATUS_PERDIDO)):
+                                self._patch("leads", [{
+                                    "id": sid, "pipeline_id": pipe_destino,
+                                    "status_id": entry_status,
+                                }])
+                                logger.info(f"Lead-irmão {sid} (Recepção) movido junto → {pipe_destino}")
+                                time.sleep(0.2)
+                except Exception as e:
+                    logger.warning(f"Move de irmãos do contato falhou (não-crítico): {e}")
             except Exception as e:
                 logger.error(
                     f"FALHA ao mover lead {lead_id} → pipeline {pipe_destino} "
