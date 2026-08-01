@@ -220,6 +220,23 @@ def build_report(semanal: bool = False) -> str:
     except Exception as e:
         logger.warning(f"radar: matching indisponível: {e}")
 
+    # ── 🤝 Matches E2: demanda × parceiros (Eduardo — validação HUMANA) ───────
+    try:
+        import parceiros as _parc
+        mp = _parc.run_matching(dry_run=True, batch=20)
+        if mp.get("com_match"):
+            linhas += [
+                "",
+                f"🤝 MATCHES DE PARCEIROS: {mp['com_match']} cliente(s) com imóvel "
+                f"compatível em site parceiro (validar parceria ANTES de ofertar):",
+            ]
+            linhas += [f"   • {p}" for p in mp.get("propostas", [])[:6]]
+            if mp["com_match"] > 6:
+                linhas.append(f"   … e mais {mp['com_match'] - 6}.")
+            linhas.append("   → Gravar no CRM: /admin/parceiros?dry_run=false")
+    except Exception as e:
+        logger.warning(f"radar: parceiros indisponível: {e}")
+
     linhas += [
         "",
         "💡 Perfil com 3+ clientes = captação com fechamento quase garantido.",
