@@ -1096,6 +1096,13 @@ async def admin_retroativo_realocar(batch: int = 20, dry_run: bool = True):
     return resultado
 
 
+@app.get("/admin/custos")
+async def admin_custos():
+    """Gasto de IA por robô desde o deploy do medidor (tokens, US$ e R$)."""
+    import custos
+    return await asyncio.to_thread(custos.resumo)
+
+
 @app.get("/admin/transcripts")
 async def admin_transcripts(dias: int = 7):
     """

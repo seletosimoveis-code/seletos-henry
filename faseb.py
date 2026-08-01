@@ -183,6 +183,8 @@ def _mensagem_revalidacao(nome: str, funil: str, ctx: dict) -> str:
                           f"Nome: {nome or 'não informado'} | O que sabemos: {sabemos}"}],
         )
         msg = resp.content[0].text.strip()
+        import custos
+        custos.registrar("faseb", HAIKU_MODEL, resp.usage)
         if 15 <= len(msg) <= 400:
             return msg
     except Exception as e:

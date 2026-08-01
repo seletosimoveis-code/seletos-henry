@@ -19,6 +19,7 @@ from gabriel.prompts import get_prompt
 from site_seletos import fetch_imovel_details, extract_ref_from_text
 from agent import EQUIPE_TAG
 import store
+import custos
 
 # Fuso de Brasília: UTC-3 fixo (Brasil não usa horário de verão desde 2019)
 _BR_TZ = timezone(timedelta(hours=-3))
@@ -158,6 +159,7 @@ class GabrielManager:
                 messages   = seed,
             )
             raw = response.content[0].text
+            custos.registrar("gabriel", GABRIEL_MODEL, response.usage)
         except Exception as e:
             logger.error(f"[{phone}] Gabriel activate erro: {e}")
             raw = "Olá! Sou Gabriel da Seletos 😊 Vou te ajudar com seu atendimento. Me conta um pouco mais sobre o que está buscando?"
@@ -241,6 +243,7 @@ class GabrielManager:
                 messages   = history,
             )
             raw = response.content[0].text
+            custos.registrar("gabriel", GABRIEL_MODEL, response.usage)
         except Exception as e:
             logger.error(f"[{phone}] Gabriel chat erro: {e}")
             raw = "Desculpe, tive uma instabilidade. Pode repetir? 🙏"

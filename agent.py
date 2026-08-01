@@ -10,6 +10,7 @@ from anthropic import Anthropic
 from config import ANTHROPIC_API_KEY, CLAUDE_MODEL, MAX_HISTORY
 from prompts import SYSTEM_PROMPT
 import store
+import custos
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ class AgentManager:
                 messages   = history,
             )
             raw_text = response.content[0].text
+            custos.registrar("henry", CLAUDE_MODEL, response.usage)
         except Exception as e:
             logger.error(f"[{phone}] Erro Claude API: {e}")
             raw_text = "Desculpe, tive uma instabilidade momentânea. Pode repetir? 🙏"
@@ -143,6 +145,7 @@ class AgentManager:
                 messages   = seed,
             )
             raw = response.content[0].text
+            custos.registrar("henry", CLAUDE_MODEL, response.usage)
         except Exception as e:
             logger.error(f"[{phone}] Henry activate erro: {e}")
             raw = "Olá! 👋 Sou Henry da Seletos Imóveis. Vi que você entrou em contato conosco — como posso te ajudar hoje?"

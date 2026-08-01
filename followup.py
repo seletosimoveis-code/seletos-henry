@@ -188,6 +188,8 @@ def _generate_message(history: list[dict], touch: int, bot_name: str) -> str:
             messages   = [{"role": "user", "content": f"CONVERSA ATÉ AGORA:\n{transcript}"}],
         )
         msg = resp.content[0].text.strip()
+        import custos
+        custos.registrar("followup", HAIKU_MODEL, resp.usage)
         if 10 <= len(msg) <= 500:
             return msg
     except Exception as e:

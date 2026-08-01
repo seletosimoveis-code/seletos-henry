@@ -248,6 +248,8 @@ def _extract_via_llm(transcript: str) -> dict:
             messages   = [{"role": "user", "content": prompt}],
         )
         raw = resp.content[0].text.strip()
+        import custos
+        custos.registrar("enricher", HAIKU_MODEL, resp.usage)
 
         # Remove bloco markdown se o modelo insistir em retornar
         if "```" in raw:
