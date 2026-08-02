@@ -451,6 +451,10 @@ def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
                 # lead com bairro definido → o item TEM que citar o bairro
                 if bairro_d not in it["texto_busca"]:
                     continue
+                # bairro certo mas TIPO CONFLITANTE elimina (galpão comercial
+                # não serve para quem busca apartamento — calibragem 02/08)
+                if tipo_d and it["tipo"] and not tipo_ok:
+                    continue
                 sc = 3 + (2 if tipo_ok else 0)
             else:
                 # sem bairro → só com tipo batendo E preços dos dois lados
