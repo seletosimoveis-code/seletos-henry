@@ -159,15 +159,42 @@ def _preco(item: dict) -> int | None:
     preco = None
     try:
         r = requests.get(item["link"], headers=_UA, timeout=15)
-        vals = []
-        for p in re.findall(r"R\$\s?([\d\.]+)(?:,\d{2})?", r.text):
-            try:
-                vals.append(int(p.replace(".", "")))
-            except ValueError:
-                continue
+        # &nbsp;/nbsp real entre "R$" e o número quebravam o regex — e o IPTU
+        # virava "o maior valor" (caso ref 269: bot falou R$2.597 de IPTU como
+        # aluguel; o aluguel real era R$3.500). Normaliza antes de extrair.
+        texto = r.text.replace("&nbsp;", " ").replace("\xa0", " ")
         faixa = (300, 60_000) if item["finalidade"] == "aluguel" else (30_000, 60_000_000)
-        na_faixa = [v for v in vals if faixa[0] <= v <= faixa[1]]
-        preco = max(na_faixa) if na_faixa else None
+
+        # 1º) valor ROTULADO tem prioridade absoluta
+        rotulo = r"Aluguel" if item["finalidade"] == "aluguel" else r"(?:Venda|Valor)"
+        m = re.search(rotulo + r"[^R$]{0,60}?R\$\s*([\d\.]+)", texto, re.I)
+        if m:
+            try:
+                v = int(m.group(1).replace(".", ""))
+                if faixa[0] <= v <= faixa[1]:
+                    preco = v
+            except ValueError:
+                pass
+
+        # 2º) fallback: maior R$ na faixa, EXCLUINDO IPTU e condomínio
+        if preco is None:
+            excluidos = set()
+            for lab in ("IPTU", "Condom", "Imposto"):
+                for mm in re.finditer(lab + r"[^R$]{0,80}?R\$\s*([\d\.]+)", texto, re.I):
+                    try:
+                        excluidos.add(int(mm.group(1).replace(".", "")))
+                    except ValueError:
+                        continue
+            vals = []
+            for p in re.findall(r"R\$\s*([\d\.]+)(?:,\d{2})?", texto):
+                try:
+                    v = int(p.replace(".", ""))
+                    if v not in excluidos:
+                        vals.append(v)
+                except ValueError:
+                    continue
+            na_faixa = [v for v in vals if faixa[0] <= v <= faixa[1]]
+            preco = max(na_faixa) if na_faixa else None
     except Exception as e:
         logger.warning(f"estoque: preço ref {ref}: {e}")
     _prices[ref] = (preco, time.time())
