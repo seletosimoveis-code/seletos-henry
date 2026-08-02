@@ -234,9 +234,12 @@ def fetch_inventory(force: bool = False, so_parceiro: str = "") -> dict:
 
     items: dict = dict(cache.get("items") or {}) if isinstance(cache, dict) else {}
     filtro = _norm(so_parceiro)
+    feitos: list = []
     for p in PARCEIROS:
         if filtro and filtro not in _norm(p["nome"]):
             continue
+        store.set_state("global", "parc_progress",
+                        {"atual": p["nome"], "feitos": feitos, "ts": time.time()})
         try:
             links = _discover_item_links(p["site"])
             n_novo = 0
@@ -246,11 +249,16 @@ def fetch_inventory(force: bool = False, so_parceiro: str = "") -> dict:
                 if it and (it["tipo"] or it["preco"] or it["cidade"]):
                     items[url] = it
                     n_novo += 1
+            feitos.append(f"{p['nome']}: {n_novo} itens ({len(links)} links)")
             logger.info(f"parceiros: {p['nome']} — {len(links)} links, {n_novo} itens úteis")
         except Exception as e:
+            feitos.append(f"{p['nome']}: ERRO {e}")
             logger.warning(f"parceiros: varredura {p['nome']} falhou: {e}")
+        # Salva SITE A SITE — deploy/restart no meio não perde o que já foi
+        store.set_state("global", "parc_inv", {"ts": time.time(), "items": items})
 
-    store.set_state("global", "parc_inv", {"ts": time.time(), "items": items})
+    store.set_state("global", "parc_progress",
+                    {"atual": "CONCLUÍDO", "feitos": feitos, "ts": time.time()})
     return items
 
 

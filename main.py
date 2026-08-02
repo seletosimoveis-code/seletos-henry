@@ -1184,6 +1184,17 @@ async def admin_parceiros(dry_run: bool = True, batch: int = 20,
     return await asyncio.to_thread(parceiros.run_matching, dry_run, batch)
 
 
+@app.get("/admin/parceiros/status")
+async def admin_parceiros_status():
+    """Progresso da varredura de parceiros + tamanho do inventário."""
+    inv = parceiros.cached_inventory()
+    por_fonte: dict = {}
+    for it in inv.values():
+        por_fonte[it["fonte"]] = por_fonte.get(it["fonte"], 0) + 1
+    prog = store.all_state("parc_progress").get("global") or {}
+    return {"inventario": len(inv), "por_parceiro": por_fonte, "varredura": prog}
+
+
 @app.api_route("/admin/faseb", methods=["GET", "POST"])
 async def admin_faseb(dry_run: bool = True, batch: int = 0):
     """
