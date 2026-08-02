@@ -388,7 +388,7 @@ def cached_inventory() -> dict:
 
 # ─── Matching × DEmanda ───────────────────────────────────────────────────────
 
-def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
+def run_matching(dry_run: bool = True, batch: int = 20, debug: bool = False) -> dict:
     """
     Cruza DEmanda × inventário de parceiros. Modo real: Imóveis Potenciais
     (append) + tarefa 🤝 para HUMANO validar. NUNCA notifica o cliente.
@@ -415,6 +415,7 @@ def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
     stats = {"demanda_total": len(leads), "avaliados": 0, "com_match": 0,
              "gravados": 0, "pulados_sem_perfil": 0}
     propostas = []
+    diag = []
 
     for ld in leads:
         if stats["avaliados"] >= batch:
@@ -463,14 +464,19 @@ def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
                     continue
                 sc = 2
             cands.append((sc, it))
+        if debug and len(diag) < 25:
+            diag.append(f"{ld.get('name')} | tipo='{tipo_d}' bairro='{bairro_d}' "
+                        f"price={price} fin={fin_d} → {len(cands)} candidato(s)")
         if not cands:
             continue
         cands.sort(key=lambda x: -x[0])
         top = cands[0][1]
 
         # 1 proposta por (lead, url) para sempre — nunca repete
+        # (corrigido 02/08: leitura era all_state(phone) — semântica invertida,
+        # a trava nunca funcionava)
         h = hashlib.md5(top["url"].encode()).hexdigest()[:10]
-        if store.all_state(f"match_parc_{lead_id}").get(h):
+        if store.get_state(f"match_parc_{lead_id}", h):
             continue
         stats["com_match"] += 1
 
@@ -489,8 +495,9 @@ def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
 
         atual = val(F_IMOVEIS_POTENCIAIS)
         if top["url"] not in atual:
+            # SEM emoji: o Kommo trunca o texto no 1º caractere de 4 bytes
             novo_txt = (atual + "\n" if atual else "") + \
-                f"[🤝 parceiro {agora.strftime('%d/%m')}] {top['fonte']}: {top['url']}"
+                f"[parceiro {agora.strftime('%d/%m')}] {top['fonte']}: {top['url']}"
             try:
                 requests.patch(
                     f"{_BASE}/leads/{lead_id}", headers=_hdr(), timeout=10,
@@ -518,6 +525,8 @@ def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
         **stats,
         "propostas": propostas[:40],
     }
+    if debug:
+        resultado["diag"] = diag
     store.set_state("global", "parceiros_status", resultado)
     logger.info(f"parceiros: {resultado['status']} — {stats}")
     return resultado

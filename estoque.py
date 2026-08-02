@@ -365,8 +365,10 @@ def run_matching(dry_run: bool = True, batch: int = 15, notificar: bool = True) 
             tipo=tipo, bairro=bairro,
             max_price=price if price >= JUNK_PRICE_MAX else 0, limit=3,
         )
+        # (corrigido 02/08: leitura era all_state — semântica invertida,
+        # a trava "1 aviso por imóvel por lead" nunca funcionava)
         novos = [m for m in matches
-                 if not store.all_state(f"match_{lead_id}").get(m["ref"])]
+                 if not store.get_state(f"match_{lead_id}", m["ref"])]
         if not novos:
             continue
         stats["com_match"] += 1

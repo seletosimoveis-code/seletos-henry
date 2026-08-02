@@ -153,6 +153,17 @@ def set_state(phone: str, key: str, value) -> None:
     )
 
 
+def get_state(phone: str, key: str):
+    """Valor de UMA chave de UM telefone/entidade (ou None)."""
+    rows = _query("SELECT value FROM state WHERE phone=? AND key=?", (phone, key))
+    if not rows:
+        return None
+    try:
+        return json.loads(rows[0][0])
+    except Exception:
+        return None
+
+
 def del_state(phone: str, key: str) -> None:
     _exec("DELETE FROM state WHERE phone=? AND key=?", (phone, key))
 

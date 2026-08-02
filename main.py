@@ -1168,7 +1168,8 @@ async def admin_matching(dry_run: bool = True, batch: int = 15, notificar: bool 
 
 @app.api_route("/admin/parceiros", methods=["GET", "POST"])
 async def admin_parceiros(dry_run: bool = True, batch: int = 20,
-                          refresh: bool = False, parceiro: str = ""):
+                          refresh: bool = False, parceiro: str = "",
+                          debug: bool = False):
     """
     EDUARDO E2 — varredura de parceiros × DEmanda. refresh=true refaz o
     inventário agora (demora: ~19 sites); parceiro=nome varre só um site.
@@ -1181,7 +1182,7 @@ async def admin_parceiros(dry_run: bool = True, batch: int = 20,
         for it in inv.values():
             por_fonte[it["fonte"]] = por_fonte.get(it["fonte"], 0) + 1
         return {"inventario": len(inv), "por_parceiro": por_fonte}
-    return await asyncio.to_thread(parceiros.run_matching, dry_run, batch)
+    return await asyncio.to_thread(parceiros.run_matching, dry_run, batch, debug)
 
 
 @app.get("/admin/parceiros/status")

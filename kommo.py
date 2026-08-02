@@ -886,6 +886,9 @@ class KommoClient:
 
     def add_task(self, lead_id: int, texto: str, prazo_segundos: int = 86400) -> None:
         """Cria tarefa simples num lead (usada para alertas à equipe)."""
+        # Kommo trunca texto no primeiro caractere de 4 bytes (emoji 🤝/🎯):
+        # o campo da Liliane virou "[" em 02/08. Emojis fora do BMP são removidos.
+        texto = re.sub(r"[\U00010000-\U0010FFFF]", "", texto).strip()
         try:
             self._post("tasks", [{
                 "entity_id"    : lead_id,
