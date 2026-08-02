@@ -263,17 +263,6 @@ def cached_inventory() -> dict:
 
 # ─── Matching × DEmanda ───────────────────────────────────────────────────────
 
-def _score(item: dict, tipo_d: str, bairro_d: str, cidade_ok: bool) -> int:
-    s = 0
-    if tipo_d and (tipo_d in item["texto_busca"] or item["tipo"] in tipo_d):
-        s += 2
-    if bairro_d and bairro_d in item["texto_busca"]:
-        s += 3
-    if cidade_ok:
-        s += 1
-    return s
-
-
 def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
     """
     Cruza DEmanda × inventário de parceiros. Modo real: Imóveis Potenciais
@@ -329,11 +318,22 @@ def run_matching(dry_run: bool = True, batch: int = 20) -> dict:
                 continue
             if price >= 500 and it["preco"] and it["preco"] > price * 1.25:
                 continue
-            cidade_ok = (not it["cidade"]) or it["cidade"] in ("natal",) or \
-                        (bairro_d and it["cidade"] in bairro_d)
-            sc = _score(it, tipo_d, bairro_d, cidade_ok)
-            if sc >= 3:                      # exige tipo+cidade ou bairro
-                cands.append((sc, it))
+            # Sinal FORTE obrigatório (calibragem 01/08: 1 casa de R$8.800
+            # casava com todo lead casa-aluguel sem bairro/orçamento):
+            tipo_ok = bool(tipo_d) and (tipo_d in it["texto_busca"]
+                                        or (it["tipo"] and it["tipo"] in tipo_d))
+            if bairro_d:
+                # lead com bairro definido → o item TEM que citar o bairro
+                if bairro_d not in it["texto_busca"]:
+                    continue
+                sc = 3 + (2 if tipo_ok else 0)
+            else:
+                # sem bairro → só com tipo batendo E preços dos dois lados
+                # conhecidos e compatíveis (já filtrado acima)
+                if not (tipo_ok and price >= 500 and it["preco"]):
+                    continue
+                sc = 2
+            cands.append((sc, it))
         if not cands:
             continue
         cands.sort(key=lambda x: -x[0])
