@@ -109,7 +109,8 @@ def _norm(s: str) -> str:
 def _get(url: str, timeout: int = 15) -> str:
     try:
         r = requests.get(url, headers=_UA, timeout=timeout, allow_redirects=True)
-        if r.status_code == 200 and "text/html" in r.headers.get("content-type", "html"):
+        ct = r.headers.get("content-type", "html")
+        if r.status_code == 200 and ("html" in ct or "xml" in ct):
             return r.text
     except Exception as e:
         logger.debug(f"parceiros: {url}: {e}")
@@ -121,6 +122,32 @@ def _hdr():
 
 
 # ─── Extração ─────────────────────────────────────────────────────────────────
+
+def _sitemap_item_links(site: str) -> list[str]:
+    """
+    Fallback para sites 100% JavaScript (Andrade Marinho, Moura Dubeux,
+    Dois A — 0 links no HTML): o sitemap.xml é estático e lista as URLs
+    mesmo quando a página é renderizada no navegador.
+    """
+    for path in ("/sitemap.xml", "/sitemap_index.xml", "/wp-sitemap.xml",
+                 "/sitemap-index.xml"):
+        xml = _get(site.rstrip("/") + path, timeout=20)
+        if not xml or "<loc" not in xml:
+            continue
+        locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)
+        subs  = [u for u in locs if u.endswith(".xml")][:6]
+        pages = [u for u in locs if not u.endswith(".xml")]
+        for su in subs:
+            x2 = _get(su, timeout=20)
+            pages += re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", x2)
+            time.sleep(0.3)
+        hits = [u.rstrip("/") for u in pages
+                if any(h in _norm(u) for h in _ITEM_HINTS)]
+        if hits:
+            logger.info(f"parceiros: sitemap de {site} → {len(hits)} candidatos")
+            return hits[:MAX_ITENS_SITE]
+    return []
+
 
 def _discover_item_links(site: str) -> list[str]:
     """Links internos que parecem página de imóvel/empreendimento."""
@@ -152,7 +179,84 @@ def _discover_item_links(site: str) -> list[str]:
         time.sleep(SLEEP_S)
         if len(found) >= MAX_ITENS_SITE * 2:
             break
+    if not found:
+        found = _sitemap_item_links(site)      # sites JS → sitemap estático
     return found[:MAX_ITENS_SITE]
+
+
+# ─── Chaves na Mão (portal LEGÍVEL — validado 12/07 e 02/08) ──────────────────
+# A URL do anúncio carrega TUDO: tipo, finalidade, cidade, bairro, quartos,
+# m² e preço (…-rn-natal-ponta-negra-57m2-RS4000/id-30647333). Indexamos
+# pelas páginas de busca sem visitar anúncio por anúncio — custo mínimo.
+
+_CNM = "https://www.chavesnamao.com.br"
+_CNM_BUSCAS = [
+    ("aluguel", "/imoveis-para-alugar/rn-natal/"),
+    ("venda",   "/imoveis-a-venda/rn-natal/"),
+    ("aluguel", "/imoveis-para-alugar/rn-parnamirim/"),
+    ("venda",   "/imoveis-a-venda/rn-parnamirim/"),
+    ("aluguel", "/imoveis-para-alugar/rn-mossoro/"),
+    ("venda",   "/imoveis-a-venda/rn-mossoro/"),
+    ("aluguel", "/imoveis-para-alugar/rn-acu/"),
+    ("venda",   "/imoveis-a-venda/rn-acu/"),
+]
+CNM_PAGES = int(os.getenv("PARCEIROS_CNM_PAGES", "3"))   # páginas por busca
+
+
+def _cnm_parse(href: str, finalidade: str) -> dict | None:
+    m = re.search(r"/imovel/([a-z0-9\-]+)/id-(\d+)", href)
+    if not m:
+        return None
+    slug = m.group(1)
+    url  = f"{_CNM}/imovel/{slug}/id-{m.group(2)}/"
+
+    tipo = next((t for t in _TIPOS if slug.startswith(t)), "")
+    if slug.startswith("kitnet"):
+        tipo = "kitnet"
+    mp = re.search(r"-rs(\d+)$", slug)
+    preco = int(mp.group(1)) if mp else None
+
+    cidade, bairro = "", ""
+    mc = re.search(r"-rn-([a-z0-9\-]+)$", re.sub(r"(-\d+m2)?(-rs\d+)?$", "", slug))
+    if mc:
+        resto = mc.group(1)
+        for c in sorted(_CIDADES, key=len, reverse=True):
+            c_slug = c.replace(" ", "-")
+            if resto == c_slug or resto.startswith(c_slug + "-"):
+                cidade = c.replace("-", " ")
+                bairro = resto[len(c_slug):].strip("-").replace("-", " ")
+                break
+    q = re.search(r"(\d+)-quarto", slug)
+
+    titulo = slug.replace("-", " ")[:110]
+    return {
+        "url": url, "titulo": titulo, "fonte": "Chaves na Mão",
+        "fonte_tipo": "portal", "finalidade": finalidade,
+        "tipo": tipo, "cidade": cidade, "bairro": bairro, "preco": preco,
+        "quartos": int(q.group(1)) if q else None,
+        "texto_busca": _norm(slug.replace("-", " ")),
+    }
+
+
+def _fetch_cnm() -> dict:
+    """Indexa o Chaves na Mão pelas páginas de busca (URLs auto-descritivas)."""
+    items: dict = {}
+    for finalidade, path in _CNM_BUSCAS:
+        for pg in range(1, CNM_PAGES + 1):
+            url = _CNM + path + (f"?pg={pg}" if pg > 1 else "")
+            html = _get(url, timeout=20)
+            if not html:
+                break
+            hrefs = set(re.findall(r'href="(/imovel/[^"]+?/id-\d+/?)"', html))
+            if not hrefs:
+                break
+            for h in hrefs:
+                it = _cnm_parse(h.lower(), finalidade)
+                if it and (it["tipo"] or it["preco"]):
+                    items[it["url"]] = it
+            time.sleep(SLEEP_S)
+    logger.info(f"parceiros: Chaves na Mão — {len(items)} itens indexados")
+    return items
 
 
 def _jsonld_hints(html: str) -> dict:
@@ -255,6 +359,19 @@ def fetch_inventory(force: bool = False, so_parceiro: str = "") -> dict:
             feitos.append(f"{p['nome']}: ERRO {e}")
             logger.warning(f"parceiros: varredura {p['nome']} falhou: {e}")
         # Salva SITE A SITE — deploy/restart no meio não perde o que já foi
+        store.set_state("global", "parc_inv", {"ts": time.time(), "items": items})
+
+    # Portal Chaves na Mão (barato: só páginas de busca, sem visitar anúncios)
+    if not filtro or filtro in _norm("Chaves na Mão"):
+        store.set_state("global", "parc_progress",
+                        {"atual": "Chaves na Mão", "feitos": feitos, "ts": time.time()})
+        try:
+            cnm = _fetch_cnm()
+            items.update(cnm)
+            feitos.append(f"Chaves na Mão: {len(cnm)} itens")
+        except Exception as e:
+            feitos.append(f"Chaves na Mão: ERRO {e}")
+            logger.warning(f"parceiros: Chaves na Mão falhou: {e}")
         store.set_state("global", "parc_inv", {"ts": time.time(), "items": items})
 
     store.set_state("global", "parc_progress",
