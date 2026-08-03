@@ -318,6 +318,19 @@ async def webhook_zapi(request: Request):
     text  = (body.get("text") or {}).get("message", "").strip()
     name  = body.get("senderName", "").strip()
 
+    # ── Referral de ANÚNCIO Meta (click-to-WhatsApp) ──────────────────────────
+    # Quando o cliente chega clicando num anúncio, a Z-API inclui um bloco
+    # `referral` (sourceUrl/sourceId/ctwaClid/headline). Registramos canal +
+    # nota no lead — é a atribuição anúncio→lead da meta de mídia própria.
+    _referral = body.get("referral") or {}
+    if phone and isinstance(_referral, dict) and (
+        _referral.get("sourceUrl") or _referral.get("sourceId") or _referral.get("ctwaClid")
+    ):
+        logger.info(f"[{phone}] Referral de anúncio detectado: {str(_referral)[:150]}")
+        asyncio.create_task(asyncio.to_thread(
+            kommo.registrar_referral_meta, phone, dict(_referral)
+        ))
+
     # Aprende o mapa LID→telefone (usado para resolver eventos fromMe com LID)
     for _lid_field in ("lid", "senderLid", "chatLid", "participantLid"):
         _lid_raw = str(body.get(_lid_field) or "")
@@ -467,6 +480,16 @@ async def _process_message_inner(
             return
 
         lead_ctx = await asyncio.to_thread(kommo.get_lead_context, phone)
+
+        # Canal de Aquisição: PRIMEIRO contato chegando pelo WhatsApp (sem
+        # histórico de bot) → canal "whatsapp" (orgânico). Nunca sobrescreve:
+        # lead de portal que depois conversa no WhatsApp mantém canal_pro;
+        # referral de anúncio Meta é gravado antes, no webhook.
+        if (lead_ctx.get("id") and not henry.get_history(phone)
+                and not gabriel.is_active(phone)):
+            asyncio.create_task(asyncio.to_thread(
+                kommo.marcar_canal_entrada, lead_ctx["id"], "whatsapp"
+            ))
 
         # ── CLIENTE DA CASA (contrato ganho): robôs NÃO atendem ────────────────
         # Regra do Felipe (11/07, caso Renato): cliente com negócio fechado que
@@ -871,6 +894,10 @@ async def activate_henry_for_lead(lead_id: int, max_idade_h: float | None = None
             logger.info(f"[{phone}] Número da equipe (via Kommo) — Henry não ativado")
             return
 
+        # Canal de Aquisição: preenche na entrada (nunca sobrescreve) — infere
+        # Canal Pro pelo nome do lead. Background, não-crítico.
+        asyncio.create_task(asyncio.to_thread(kommo.marcar_canal_entrada, lead_id))
+
         # ── Posse do caminho reativo (caso Jô, 12/07) ──────────────────────────
         # Mensagem chegou pelo Z-API há <90s → o caminho reativo é dono da
         # conversa; a saudação proativa fica dispensada (evita dupla apresentação).
@@ -1026,6 +1053,62 @@ async def admin_duplicados():
     o merge é feito na interface do Kommo. Demora ~1-2 min (varre contatos).
     """
     return await asyncio.to_thread(retroativo.relatorio_duplicados)
+
+
+@app.api_route("/admin/retroativo/canal", methods=["GET", "POST"])
+async def admin_retroativo_canal(batch: int = 200, dry_run: bool = True):
+    """
+    Backfill do "Canal de Origem" nos leads ativos que entraram ANTES da
+    instrumentação (02/08). Inferência conservadora:
+      · nome contém "Canal Pro"           → canal_pro
+      · demais (chegaram pelo WhatsApp)   → whatsapp
+    Nunca sobrescreve campo já preenchido. dry_run=true (padrão) só conta.
+    Limitação honesta: dentro de "whatsapp" não distinguimos Instagram,
+    indicação ou placa — isso só a instrumentação de entrada resolve daqui
+    pra frente.
+    """
+    PIPES_CLIENTE = [PIPE_RECEPCAO, PIPE_ALUGUEL, PIPE_AVULSO, 11497087, 11482947]
+
+    def _coletar() -> list[dict]:
+        leads = []
+        for pipe in PIPES_CLIENTE:
+            leads += retroativo._paginate_leads(
+                {"filter[pipeline_id]": pipe},
+                keep=lambda ld: ld.get("status_id") not in (STATUS_GANHO, STATUS_PERDIDO),
+            )
+        return leads
+
+    def _canal_atual(ld: dict) -> bool:
+        from kommo import F_CANAL_ORIGEM
+        for cf in (ld.get("custom_fields_values") or []):
+            if cf.get("field_id") == F_CANAL_ORIGEM and (cf.get("values") or []):
+                return True
+        return False
+
+    leads = await asyncio.to_thread(_coletar)
+    ja_tem    = [l for l in leads if _canal_atual(l)]
+    pendentes = [l for l in leads if not _canal_atual(l)]
+    plano = {
+        "canal_pro": [l["id"] for l in pendentes if "canal pro" in (l.get("name") or "").lower()],
+        "whatsapp" : [l["id"] for l in pendentes if "canal pro" not in (l.get("name") or "").lower()],
+    }
+    resumo = {"ativos_analisados": len(leads), "ja_preenchidos": len(ja_tem),
+              "a_preencher": {k: len(v) for k, v in plano.items()}}
+    if dry_run:
+        return {"dry_run": True, **resumo,
+                "amostra": {k: v[:10] for k, v in plano.items()}}
+
+    feitos = 0
+    from kommo import CANAL_ENUM, F_CANAL_ORIGEM
+    for canal, ids in plano.items():
+        for lid in ids[:batch]:
+            await asyncio.to_thread(
+                kommo._patch_field, lid, F_CANAL_ORIGEM, {"enum_id": CANAL_ENUM[canal]}
+            )
+            feitos += 1
+    logger.info(f"[retroativo/canal] {feitos} leads preenchidos")
+    return {"dry_run": False, **resumo, "preenchidos_nesta_rodada": feitos,
+            "obs": f"batch={batch} por canal; rode novamente até zerar"}
 
 
 @app.api_route("/admin/recepcao/resgatar", methods=["GET", "POST"])

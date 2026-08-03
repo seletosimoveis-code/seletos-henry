@@ -151,6 +151,20 @@ SCORE_ENUM = {
     "frio"  : 1111560,
 }
 
+# Canal de Origem (F_CANAL_ORIGEM 1328586) — base da métrica semanal de aquisição.
+# "redes_sociais" cobre anúncios Meta click-to-WhatsApp enquanto não existir
+# opção dedicada "Anúncio Meta" no select (criar na UI se quiser separar orgânico
+# de pago; o detalhe do anúncio fica registrado em nota de qualquer forma).
+CANAL_ENUM = {
+    "canal_pro"    : 1110898,   # Canal Pro (OLX/Zap)
+    "whatsapp"     : 1110900,   # WhatsApp organico
+    "indicacao"    : 1110902,
+    "site"         : 1110904,   # Site proprio
+    "redes_sociais": 1110906,   # Redes sociais (inclui anúncio Meta por ora)
+    "evento"       : 1110908,
+    "outro"        : 1110910,
+}
+
 # Aceita animais (aluguel)
 ANIMAIS_ENUM = {
     "sim": 1110928,
@@ -899,6 +913,74 @@ class KommoClient:
             }])
         except Exception as e:
             logger.error(f"add_task lead {lead_id}: {e}")
+
+    # ─── Canal de Aquisição (métrica semanal — decisão Felipe 02/08) ──────────
+
+    def marcar_canal_entrada(self, lead_id: int, canal_hint: str | None = None) -> None:
+        """
+        Preenche "Canal de Origem" NA ENTRADA do lead — nunca sobrescreve.
+
+        Inferência (nesta ordem):
+          1. Campo já preenchido → não toca (respeita registro manual da equipe).
+          2. Nome do lead contém "Canal Pro" → canal_pro (padrão OLX/Zap).
+          3. canal_hint do chamador (ex.: "whatsapp" no primeiro contato reativo,
+             "redes_sociais" quando há referral de anúncio Meta).
+
+        Antes desta rotina o campo estava preenchido em 4 de 240 leads (30d) —
+        toda a análise de canal dependia de inferência frágil por nome.
+        """
+        try:
+            lead = self._get(f"leads/{lead_id}")
+            for cf in (lead.get("custom_fields_values") or []):
+                if cf.get("field_id") == F_CANAL_ORIGEM and (cf.get("values") or []):
+                    return   # já tem canal — registro existente é sagrado
+            canal = None
+            if "canal pro" in (lead.get("name") or "").lower():
+                canal = "canal_pro"
+            elif canal_hint in CANAL_ENUM:
+                canal = canal_hint
+            if not canal:
+                return
+            self._patch_field(lead_id, F_CANAL_ORIGEM, {"enum_id": CANAL_ENUM[canal]})
+            logger.info(f"Lead {lead_id}: Canal de Origem = {canal}")
+        except Exception as e:
+            logger.warning(f"marcar_canal_entrada lead {lead_id} falhou (não-crítico): {e}")
+
+    def registrar_referral_meta(self, phone: str, referral: dict) -> None:
+        """
+        Cliente chegou clicando em ANÚNCIO Meta (click-to-WhatsApp): a Z-API
+        entrega um bloco `referral` na mensagem. Grava canal + nota com os dados
+        do anúncio — é o elo custo-do-anúncio → lead → venda da meta de
+        marketing (mídia própria p/ reduzir dependência dos portais).
+        UMA VEZ POR LEAD (guard no store: eventos repetidos não duplicam nota).
+        """
+        try:
+            lead = self.find_lead_by_phone(phone)
+            if not lead:
+                return
+            lead_id = lead.get("id")
+            import store as _store
+            if _store.all_state("canal_ref").get(str(lead_id)):
+                return
+            _store.set_state(str(lead_id), "canal_ref", int(time.time()))
+
+            self.marcar_canal_entrada(lead_id, canal_hint="redes_sociais")
+            detalhes = [
+                f"- {rot}: {referral.get(k)}"
+                for k, rot in (("headline", "Título"), ("body", "Texto"),
+                               ("sourceUrl", "URL"), ("sourceId", "ID do anúncio"),
+                               ("ctwaClid", "CTWA CLID"), ("sourceType", "Tipo"))
+                if referral.get(k)
+            ]
+            self._post("leads/notes", [{
+                "entity_id": lead_id,
+                "note_type": "common",
+                "params": {"text": "📣 Lead veio de ANÚNCIO Meta (click-to-WhatsApp)\n"
+                                   + "\n".join(detalhes)},
+            }])
+            logger.info(f"[{phone}] Referral Meta registrado no lead {lead_id}")
+        except Exception as e:
+            logger.warning(f"registrar_referral_meta {phone} falhou (não-crítico): {e}")
 
     def mark_duplicate(self, lead_novo_id: int, lead_original_id: int) -> None:
         """
