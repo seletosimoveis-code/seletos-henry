@@ -430,7 +430,10 @@ def run_matching(dry_run: bool = True, batch: int = 20, debug: bool = False) -> 
         tipo_d, bairro_d = _norm(val(F_TIPO)), _norm(val(F_BAIRRO))
         if tipo_d in ("apto", "ap"):
             tipo_d = "apartamento"
-        if not (tipo_d or bairro_d):
+        # Proposta de PARCEIRO exige perfil completo: TIPO é obrigatório
+        # (calibragem 02/08: leads só-bairro casaram com ponto comercial de
+        # 32m² — 12 clientes de moradia receberiam sala comercial)
+        if not tipo_d:
             stats["pulados_sem_perfil"] += 1
             continue
         stats["avaliados"] += 1
