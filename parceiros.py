@@ -431,6 +431,10 @@ def run_matching(dry_run: bool = True, batch: int = 20, debug: bool = False) -> 
         # "apto 3q" / "ap 2q" / "aptos" → apartamento (debug 02/08 mostrou
         # que o prefixo não era reconhecido e virava conflito de tipo)
         tipo_d = re.sub(r"\bapto?s?\b|\bap\b", "apartamento", tipo_d)
+        # "tirol, lagoa nova" / "ponta negra ou capim macio" → lista de bairros
+        # (campo composto nunca casava — debug 02/08)
+        bairros = [b.strip() for b in re.split(r"[,/;]|\bou\b|\be\b", bairro_d)
+                   if len(b.strip()) >= 3]
         # Proposta de PARCEIRO exige perfil completo: TIPO é obrigatório
         # (calibragem 02/08: leads só-bairro casaram com ponto comercial de
         # 32m² — 12 clientes de moradia receberiam sala comercial)
@@ -452,9 +456,9 @@ def run_matching(dry_run: bool = True, batch: int = 20, debug: bool = False) -> 
             # casava com todo lead casa-aluguel sem bairro/orçamento):
             tipo_ok = bool(tipo_d) and (tipo_d in it["texto_busca"]
                                         or (it["tipo"] and it["tipo"] in tipo_d))
-            if bairro_d:
-                # lead com bairro definido → o item TEM que citar o bairro
-                if bairro_d not in it["texto_busca"]:
+            if bairros:
+                # lead com bairro definido → o item TEM que citar UM dos bairros
+                if not any(b in it["texto_busca"] for b in bairros):
                     continue
                 # bairro certo mas TIPO CONFLITANTE elimina (galpão comercial
                 # não serve para quem busca apartamento — calibragem 02/08)
