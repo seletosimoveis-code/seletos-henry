@@ -428,8 +428,9 @@ def run_matching(dry_run: bool = True, batch: int = 20, debug: bool = False) -> 
             return str(v[0].get("value", "")) if v else ""
 
         tipo_d, bairro_d = _norm(val(F_TIPO)), _norm(val(F_BAIRRO))
-        if tipo_d in ("apto", "ap"):
-            tipo_d = "apartamento"
+        # "apto 3q" / "ap 2q" / "aptos" → apartamento (debug 02/08 mostrou
+        # que o prefixo não era reconhecido e virava conflito de tipo)
+        tipo_d = re.sub(r"\bapto?s?\b|\bap\b", "apartamento", tipo_d)
         # Proposta de PARCEIRO exige perfil completo: TIPO é obrigatório
         # (calibragem 02/08: leads só-bairro casaram com ponto comercial de
         # 32m² — 12 clientes de moradia receberiam sala comercial)
